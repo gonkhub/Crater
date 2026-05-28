@@ -16,7 +16,6 @@ func _ready():
 		return
 
 	if multiplayer.is_server():
-		multiplayer.peer_connected.connect(_on_peer_connected)
 		_do_spawn(1)
 	else:
 		_client_ready.rpc_id(1)
@@ -38,9 +37,6 @@ func _client_ready():
 @rpc("any_peer", "reliable")
 func _remote_spawn(id: int):
 	_do_spawn(id)
-
-func _on_peer_connected(_id: int):
-	pass
 
 func _on_peer_disconnected(id: int):
 	_do_remove(id)

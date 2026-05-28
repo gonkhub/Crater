@@ -233,6 +233,15 @@ func _on_action_chosen(action: String, target: Node):
 				if not (_hud and _hud.pause_overlay.visible):
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
+func _reset_held_state():
+	held_object = null
+	held_interactable = null
+	punch_offset = 0.0
+	punch_velocity = 0.0
+	punch_held = false
+	punch_cooldown = 0.0
+	punch_measuring = false
+
 func _release_object():
 	if not held_object:
 		return
@@ -242,13 +251,7 @@ func _release_object():
 		_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, velocity)
 	if held_interactable:
 		held_interactable.is_held = false
-	held_object = null
-	held_interactable = null
-	punch_offset = 0.0
-	punch_velocity = 0.0
-	punch_held = false
-	punch_cooldown = 0.0
-	punch_measuring = false
+	_reset_held_state()
 
 func _try_held_action(input: String):
 	if not held_interactable:
@@ -293,21 +296,13 @@ func _do_throw():
 		_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, throw_vel)
 	if held_interactable:
 		held_interactable.is_held = false
-	held_object = null
-	held_interactable = null
-	punch_offset = 0.0
-	punch_velocity = 0.0
-	punch_held = false
-	punch_cooldown = 0.0
-	punch_measuring = false
+	_reset_held_state()
 
 func _carry_update(delta: float):
 	if not is_instance_valid(held_object):
 		if is_instance_valid(held_interactable):
 			held_interactable.is_held = false
-		held_object = null
-		held_interactable = null
-		punch_offset = 0.0
+		_reset_held_state()
 		return
 	if held_object.global_position.distance_to(camera.global_position) > MAX_CARRY_DIST:
 		_release_object()
