@@ -68,9 +68,9 @@ func _do_spawn(id: int):
 		player.init_local(hud)
 
 func _register_interactables():
-	_make_interactable("adio", "Adio", ["Take"])
+	_make_interactable("adio", "Adio", [], true)
 
-func _make_interactable(node_name: String, display_name: String, actions: Array[String]):
+func _make_interactable(node_name: String, display_name: String, actions: Array[String], holdable: bool = false):
 	var node = get_node_or_null(node_name)
 	if not node:
 		push_warning("_make_interactable: node '%s' not found" % node_name)
@@ -78,8 +78,10 @@ func _make_interactable(node_name: String, display_name: String, actions: Array[
 	node.add_to_group("world_objects")
 	var tag = Interactable.new()
 	tag.display_name = display_name
-	tag.actions = actions
+	tag.actions = actions.duplicate()
 	node.add_child(tag)
+	if holdable:
+		node.add_child(Holdable.new())
 
 # ── Late-join world state sync ──────────────────────────────────────────────
 

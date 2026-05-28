@@ -20,6 +20,7 @@ var sliding := false
 var tab_mode := false
 var held_object: RigidBody3D = null
 var held_interactable: Interactable = null
+var held_holdable: Holdable = null
 var punch_offset: float = 0.0
 var punch_velocity: float = 0.0
 var punch_held: bool = false
@@ -217,14 +218,22 @@ func _find_interactable(node: Node) -> Interactable:
 			return child
 	return null
 
+func _find_holdable(node: Node) -> Holdable:
+	for child in node.get_children():
+		if child is Holdable:
+			return child
+	return null
+
 func _on_action_chosen(action: String, target: Node):
 	match action:
 		"Take":
-			if target is RigidBody3D:
+			var holdable = _find_holdable(target)
+			if target is RigidBody3D and holdable:
 				held_object = target
 				held_object.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
 				held_object.freeze = true
 				held_interactable = _find_interactable(target)
+				held_holdable = holdable
 				if held_interactable:
 					held_interactable.is_held = true
 				if _is_mp_connected():
@@ -232,10 +241,15 @@ func _on_action_chosen(action: String, target: Node):
 				tab_mode = false
 				if not (_hud and _hud.pause_overlay.visible):
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+		_:
+			var interactable = _find_interactable(target)
+			if interactable:
+				interactable.action_performed.emit(action, self)
 
 func _reset_held_state():
 	held_object = null
 	held_interactable = null
+	held_holdable = null
 	punch_offset = 0.0
 	punch_velocity = 0.0
 	punch_held = false
@@ -254,16 +268,21 @@ func _release_object():
 	_reset_held_state()
 
 func _try_held_action(input: String):
-	if not held_interactable:
+	if not held_holdable:
 		return
 	var action: String
 	match input:
-		"m1": action = held_interactable.m1_action
-		"m2": action = held_interactable.m2_action
-		"scroll_up": action = held_interactable.scroll_up_action
+		"m1": action = held_holdable.m1_action
+		"m2": action = held_holdable.m2_action
+		"scroll_up": action = held_holdable.scroll_up_action
+	if action.is_empty():
+		return
 	match action:
 		"punch": _do_punch()
 		"throw": _do_throw()
+		_:
+			if held_interactable:
+				held_interactable.action_performed.emit(action, self)
 
 func _do_punch():
 	if punch_cooldown > 0.0:
@@ -315,8 +334,8 @@ func _carry_update(delta: float):
 		punch_velocity = 0.0
 		punch_offset = move_toward(punch_offset, 0.0, PUNCH_RETURN_SPEED * delta)
 	var rotation_offset := Basis.IDENTITY
-	if held_interactable:
-		rotation_offset = Basis.from_euler(held_interactable.hold_rotation * (PI / 180.0))
+	if held_holdable:
+		rotation_offset = Basis.from_euler(held_holdable.hold_rotation * (PI / 180.0))
 	var target_basis = camera.global_transform.basis * rotation_offset
 	var target_pos = camera.global_position + -camera.global_transform.basis.z * (CARRY_DISTANCE + punch_offset)
 	var motion = target_pos - held_object.global_position
