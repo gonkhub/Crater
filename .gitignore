@@ -1,0 +1,19 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# Godot import metadata (auto-generated, not source)
+*.import
+
+# Compiled exports
+*.exe
+*.console.exe
+*.pck
+export_presets.cfg
+
+# Source asset archives (extracted assets are already tracked)
+*.zip
+
+# OS noise
+Thumbs.db
+.DS_Store

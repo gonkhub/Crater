@@ -1,0 +1,377 @@
+extends CharacterBody3D
+
+var SPEED = 5.0
+var JUMP_VELOCITY = 7.0
+var MOUSE_SENSITIVITY = 0.003
+var GRAVITY_SCALE = 2.5
+var SLIDE_FRICTION = 4.0
+var INTERACT_RANGE = 5.0
+var CARRY_DISTANCE = 2.0
+var PUNCH_DISTANCE = 1.5
+var PUNCH_ACCEL = 120.0
+var PUNCH_RETURN_SPEED = 3.5
+var PUNCH_IMPULSE = 10.0
+var THROW_SPEED = 15.0
+var MAX_CARRY_DIST = 7.0
+var PUNCH_COOLDOWN = 0.5
+var PUNCH_PUSHBACK = 0.4
+
+var sliding := false
+var tab_mode := false
+var held_object: RigidBody3D = null
+var held_interactable: Interactable = null
+var punch_offset: float = 0.0
+var punch_velocity: float = 0.0
+var punch_held: bool = false
+var punch_cooldown: float = 0.0
+var punch_measuring: bool = false
+var punch_peak_speed: float = 0.0
+var punch_target_name: String = ""
+var _hud: Node = null
+
+@onready var camera: Camera3D = $Camera3D
+
+var _test_params := PhysicsTestMotionParameters3D.new()
+var _test_result := PhysicsTestMotionResult3D.new()
+
+func _is_mp_connected() -> bool:
+	return multiplayer.has_multiplayer_peer() and \
+		multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
+
+func _ready():
+	if not is_multiplayer_authority():
+		set_physics_process(false)
+		var mesh_instance = MeshInstance3D.new()
+		var capsule = CapsuleMesh.new()
+		capsule.radius = 0.3
+		capsule.height = 1.8
+		mesh_instance.mesh = capsule
+		add_child(mesh_instance)
+		return
+	_test_params.exclude_bodies = [get_rid()]
+	camera.current = true
+	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+# Called by world.gd after spawning the local player — no fragile path lookup needed.
+func init_local(hud_node: Node) -> void:
+	_hud = hud_node
+	if not _hud:
+		return
+	_hud.action_chosen.connect(_on_action_chosen)
+	_hud.set_local_player(self)
+
+func _process(delta):
+	if not is_multiplayer_authority():
+		return
+	var prev_cooldown = punch_cooldown
+	punch_cooldown = maxf(punch_cooldown - delta, 0.0)
+	if punch_measuring and prev_cooldown > 0.0 and punch_cooldown <= 0.0:
+		print("[punch] peak speed on '%s': %.1f u/s" % [punch_target_name, punch_peak_speed])
+		punch_measuring = false
+	if held_object:
+		_carry_update(delta)
+	if not _hud:
+		return
+	if not tab_mode:
+		_hud.hide_hover_label()
+		return
+	var mouse_pos = get_viewport().get_mouse_position()
+	var origin = camera.project_ray_origin(mouse_pos)
+	var ray_end = origin + camera.project_ray_normal(mouse_pos) * INTERACT_RANGE
+	var params = PhysicsRayQueryParameters3D.create(origin, ray_end)
+	params.exclude = [get_rid()]
+	var hit = get_world_3d().direct_space_state.intersect_ray(params)
+	if hit:
+		var interactable = _find_interactable(hit.collider)
+		if interactable:
+			_hud.show_hover_label(mouse_pos, interactable.display_name)
+		else:
+			_hud.show_hover_label(mouse_pos, hit.collider.name + " (no tag)")
+	else:
+		_hud.hide_hover_label()
+
+func _unhandled_input(event):
+	if not is_multiplayer_authority():
+		return
+
+	# Click to recapture mouse when free (not in tab mode)
+	if event is InputEventMouseButton and event.pressed and not tab_mode:
+		if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
+			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+			return
+
+	# Held object inputs (mouse captured, not in tab mode)
+	if held_object and not tab_mode and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
+		if event is InputEventMouseButton:
+			if event.pressed:
+				match event.button_index:
+					MOUSE_BUTTON_LEFT:
+						_try_held_action("m1")
+						return
+					MOUSE_BUTTON_RIGHT:
+						_try_held_action("m2")
+						return
+					MOUSE_BUTTON_WHEEL_UP:
+						_try_held_action("scroll_up")
+						return
+			elif event.button_index == MOUSE_BUTTON_LEFT:
+				punch_held = false
+				return
+
+	# Tab: toggle HUD interact mode
+	if event is InputEventKey and not event.echo and event.pressed:
+		if event.physical_keycode == KEY_TAB:
+			tab_mode = !tab_mode
+			if _hud:
+				_hud.hide_action_menu()
+				_hud.hide_hover_label()
+			if tab_mode:
+				Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+			elif not (_hud and _hud.pause_overlay.visible):
+				Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+			return
+
+	# Mouse look (only when captured)
+	if event is InputEventMouseMotion:
+		if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
+			return
+		rotate_y(-event.relative.x * MOUSE_SENSITIVITY)
+		camera.rotate_x(-event.relative.y * MOUSE_SENSITIVITY)
+		camera.rotation.x = clamp(camera.rotation.x, -PI/2, PI/2)
+
+	# Left click in tab mode
+	if tab_mode and event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+			if _hud and _hud.is_action_menu_visible():
+				_hud.hide_action_menu()
+			elif held_object:
+				_release_object()
+			else:
+				_try_interact()
+
+func _physics_process(delta):
+	var gravity = get_gravity() * GRAVITY_SCALE
+
+	if not is_on_floor():
+		velocity += gravity * delta
+
+	sliding = Input.is_action_pressed("slide") and is_on_floor()
+
+	if Input.is_action_just_pressed("jump") and is_on_floor():
+		velocity.y = JUMP_VELOCITY
+		sliding = false
+
+	if sliding:
+		var floor_normal = get_floor_normal()
+		# Component of gravity tangent to the slope — pulls downhill, resists uphill
+		var slope_accel = gravity - gravity.dot(floor_normal) * floor_normal
+		velocity += slope_accel * delta
+		var horiz = Vector3(velocity.x, 0, velocity.z)
+		if horiz.length() > 0:
+			var decel = minf(SLIDE_FRICTION * delta, horiz.length())
+			velocity.x -= horiz.normalized().x * decel
+			velocity.z -= horiz.normalized().z * decel
+	elif is_on_floor():
+		var input_dir = Input.get_vector("left", "right", "up", "down")
+		var direction = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
+		if direction:
+			velocity.x = direction.x * SPEED
+			velocity.z = direction.z * SPEED
+		else:
+			velocity.x = move_toward(velocity.x, 0, SPEED)
+			velocity.z = move_toward(velocity.z, 0, SPEED)
+
+	move_and_slide()
+
+	if _is_mp_connected():
+		_sync_state.rpc(global_position, rotation.y, camera.rotation.x)
+		if held_object:
+			_sync_held_object.rpc(str(held_object.get_path()), held_object.global_transform)
+
+func _try_interact():
+	var mouse_pos = get_viewport().get_mouse_position()
+	var origin = camera.project_ray_origin(mouse_pos)
+	var ray_end = origin + camera.project_ray_normal(mouse_pos) * INTERACT_RANGE
+	var params = PhysicsRayQueryParameters3D.create(origin, ray_end)
+	params.exclude = [get_rid()]
+	var hit = get_world_3d().direct_space_state.intersect_ray(params)
+	if not hit:
+		return
+	var interactable = _find_interactable(hit.collider)
+	if not interactable:
+		return
+	# Strip actions that are currently unavailable (e.g. Take on a held object).
+	var available: Array[String] = []
+	for a in interactable.actions:
+		if a == "Take" and interactable.is_held:
+			continue
+		available.append(a)
+	if available.is_empty():
+		return
+	if _hud:
+		_hud.show_action_menu(mouse_pos, hit.collider, interactable.display_name, available)
+
+func _find_interactable(node: Node) -> Interactable:
+	for child in node.get_children():
+		if child is Interactable:
+			return child
+	return null
+
+func _on_action_chosen(action: String, target: Node):
+	match action:
+		"Take":
+			if target is RigidBody3D:
+				held_object = target
+				held_object.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+				held_object.freeze = true
+				held_interactable = _find_interactable(target)
+				if held_interactable:
+					held_interactable.is_held = true
+				if _is_mp_connected():
+					_sync_take_object.rpc(str(held_object.get_path()))
+				tab_mode = false
+				if not (_hud and _hud.pause_overlay.visible):
+					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+func _release_object():
+	if not held_object:
+		return
+	held_object.freeze = false
+	held_object.linear_velocity = velocity
+	if _is_mp_connected():
+		_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, velocity)
+	if held_interactable:
+		held_interactable.is_held = false
+	held_object = null
+	held_interactable = null
+	punch_offset = 0.0
+	punch_velocity = 0.0
+	punch_held = false
+	punch_cooldown = 0.0
+	punch_measuring = false
+
+func _try_held_action(input: String):
+	if not held_interactable:
+		return
+	var action: String
+	match input:
+		"m1": action = held_interactable.m1_action
+		"m2": action = held_interactable.m2_action
+		"scroll_up": action = held_interactable.scroll_up_action
+	match action:
+		"punch": _do_punch()
+		"throw": _do_throw()
+
+func _do_punch():
+	if punch_cooldown > 0.0:
+		return
+	punch_cooldown = PUNCH_COOLDOWN
+	punch_held = true
+	punch_velocity = 0.0
+	punch_measuring = true
+	punch_peak_speed = 0.0
+	punch_target_name = held_object.name
+	print("[punch] player %d punched '%s'" % [multiplayer.get_unique_id(), punch_target_name])
+	var punch_dir = -camera.global_transform.basis.z
+	var from = camera.global_position
+	var to = from + punch_dir * (CARRY_DISTANCE + PUNCH_DISTANCE)
+	var params = PhysicsRayQueryParameters3D.create(from, to)
+	params.exclude = [get_rid(), held_object.get_rid()]
+	var hit = get_world_3d().direct_space_state.intersect_ray(params)
+	if hit and hit.collider is RigidBody3D:
+		hit.collider.apply_central_impulse(punch_dir * PUNCH_IMPULSE)
+
+func _do_throw():
+	if not held_object:
+		return
+	print("[throw] player %d threw '%s'" % [multiplayer.get_unique_id(), held_object.name])
+	var throw_dir = -camera.global_transform.basis.z
+	var throw_vel = velocity + throw_dir * THROW_SPEED
+	held_object.freeze = false
+	held_object.linear_velocity = throw_vel
+	if _is_mp_connected():
+		_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, throw_vel)
+	if held_interactable:
+		held_interactable.is_held = false
+	held_object = null
+	held_interactable = null
+	punch_offset = 0.0
+	punch_velocity = 0.0
+	punch_held = false
+	punch_cooldown = 0.0
+	punch_measuring = false
+
+func _carry_update(delta: float):
+	if not is_instance_valid(held_object):
+		if is_instance_valid(held_interactable):
+			held_interactable.is_held = false
+		held_object = null
+		held_interactable = null
+		punch_offset = 0.0
+		return
+	if held_object.global_position.distance_to(camera.global_position) > MAX_CARRY_DIST:
+		_release_object()
+		return
+	if punch_held:
+		if punch_offset < PUNCH_DISTANCE:
+			punch_velocity += PUNCH_ACCEL * delta
+			punch_offset = minf(punch_offset + punch_velocity * delta, PUNCH_DISTANCE)
+	else:
+		punch_velocity = 0.0
+		punch_offset = move_toward(punch_offset, 0.0, PUNCH_RETURN_SPEED * delta)
+	var rotation_offset := Basis.IDENTITY
+	if held_interactable:
+		rotation_offset = Basis.from_euler(held_interactable.hold_rotation * (PI / 180.0))
+	var target_basis = camera.global_transform.basis * rotation_offset
+	var target_pos = camera.global_position + -camera.global_transform.basis.z * (CARRY_DISTANCE + punch_offset)
+	var motion = target_pos - held_object.global_position
+	_test_params.from = held_object.global_transform
+	_test_params.motion = motion
+	if PhysicsServer3D.body_test_motion(held_object.get_rid(), _test_params, _test_result):
+		target_pos = held_object.global_position + _test_result.get_travel()
+		if punch_held and punch_velocity > 0.0:
+			var punch_dir = -camera.global_transform.basis.z
+			velocity -= punch_dir * punch_velocity * PUNCH_PUSHBACK * delta
+	if punch_measuring:
+		var frame_speed = held_object.global_position.distance_to(target_pos) / delta
+		punch_peak_speed = maxf(punch_peak_speed, frame_speed)
+	held_object.global_transform = Transform3D(target_basis, target_pos)
+
+# ── Multiplayer RPCs ────────────────────────────────────────────────────────
+
+@rpc("any_peer", "reliable")
+func _sync_take_object(obj_path: String):
+	var obj = get_tree().root.get_node_or_null(obj_path)
+	if obj is RigidBody3D:
+		obj.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+		obj.freeze = true
+		var interactable = _find_interactable(obj)
+		if interactable:
+			interactable.is_held = true
+	else:
+		push_warning("[sync] _sync_take_object: node not found or not RigidBody3D: %s" % obj_path)
+
+@rpc("any_peer", "unreliable_ordered")
+func _sync_held_object(obj_path: String, xform: Transform3D):
+	var obj = get_tree().root.get_node_or_null(obj_path)
+	if obj:
+		obj.global_transform = xform
+
+@rpc("any_peer", "reliable")
+func _sync_release_object(obj_path: String, pos: Vector3, vel: Vector3):
+	var obj = get_tree().root.get_node_or_null(obj_path)
+	if obj is RigidBody3D:
+		obj.freeze = false
+		obj.global_position = pos
+		obj.linear_velocity = vel
+		var interactable = _find_interactable(obj)
+		if interactable:
+			interactable.is_held = false
+	else:
+		push_warning("[sync] _sync_release_object: node not found: %s" % obj_path)
+
+@rpc("any_peer", "unreliable_ordered")
+func _sync_state(pos: Vector3, body_y: float, cam_x: float):
+	global_position = pos
+	rotation.y = body_y
+	camera.rotation.x = cam_x
