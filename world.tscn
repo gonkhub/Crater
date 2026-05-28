@@ -2,7 +2,7 @@
 
 [ext_resource type="Script" path="res://world.gd" id="3_worldg"]
 [ext_resource type="PackedScene" path="res://Objects/adio.tscn" id="4_adio0"]
-[ext_resource type="PackedScene" uid="uid://mush001scn01" path="res://Objects/mushroom.tscn" id="5_mush0"]
+[ext_resource type="PackedScene" path="res://Objects/mushroom.tscn" id="5_mush0"]
 
 [sub_resource type="Environment" id="Environment_bta2e"]
 background_mode = 2
@@ -126,10 +126,11 @@ mesh = SubResource("ArrayMesh_83l1x")
 skeleton = NodePath("")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="NavigationRegion3D/Ramp"]
+transform = Transform3D(3, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.885689, 0)
 shape = SubResource("ConcavePolygonShape3D_2xnc0")
 
 [node name="adio" parent="." instance=ExtResource("4_adio0")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.375314, 0.40941, 3.45408)
 
 [node name="Mushroom" parent="." instance=ExtResource("5_mush0")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.6893, 0.59729, 6.7772)
