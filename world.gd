@@ -1,7 +1,6 @@
 extends Node
 
 const PLAYER = preload("res://Objects/player.tscn")
-const NPC = preload("res://Objects/npc.tscn")
 
 var hud: Node
 
@@ -9,8 +8,6 @@ func _ready():
 	hud = preload("res://hud.tscn").instantiate()
 	add_child(hud)
 
-	_register_interactables()
-	_spawn_npcs()
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 
 	if not multiplayer.has_multiplayer_peer():
@@ -69,27 +66,6 @@ func _do_spawn(id: int):
 	if is_local:
 		player.init_local(hud)
 
-func _spawn_npcs():
-	var npc = NPC.instantiate()
-	npc.name = "Villager"
-	npc.position = Vector3(3, 1, 3)
-	$NPCs.add_child(npc)
-
-func _register_interactables():
-	_make_interactable("adio", "Adio", [], true)
-
-func _make_interactable(node_name: String, display_name: String, actions: Array[String], holdable: bool = false):
-	var node = get_node_or_null(node_name)
-	if not node:
-		push_warning("_make_interactable: node '%s' not found" % node_name)
-		return
-	node.add_to_group("world_objects")
-	var tag = Interactable.new()
-	tag.display_name = display_name
-	tag.actions = actions.duplicate()
-	node.add_child(tag)
-	if holdable:
-		node.add_child(Holdable.new())
 
 # ── Late-join world state sync ──────────────────────────────────────────────
 
