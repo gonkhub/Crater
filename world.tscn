@@ -141,29 +141,25 @@ environment = SubResource("Environment_bta2e")
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(-0.1975, 0.28835, 0.936935, -0.0585648, -0.957525, 0.282341, 0.978552, 0.000891145, 0.205999, 10.6858, 9.95595, 0)
 
-[node name="recTangle" type="Node3D" parent="."]
+[node name="Floor" type="StaticBody3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.0861995, -1.19209e-07, 0.143528)
 
-[node name="Cube" type="MeshInstance3D" parent="recTangle"]
+[node name="Cube" type="MeshInstance3D" parent="Floor"]
 mesh = SubResource("ArrayMesh_b66u6")
 skeleton = NodePath("")
 
-[node name="StaticBody3D" type="StaticBody3D" parent="recTangle/Cube"]
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="recTangle/Cube/StaticBody3D"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Floor"]
 shape = SubResource("ConcavePolygonShape3D_lbcf8")
 
-[node name="ramp" type="Node3D" parent="recTangle"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.35461, 9.53674e-07, -0.369123)
+[node name="Ramp" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.26841, 8.34465e-07, -0.225595)
 
-[node name="Cube" type="MeshInstance3D" parent="recTangle/ramp"]
+[node name="Cube" type="MeshInstance3D" parent="Ramp"]
 transform = Transform3D(3, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.885689, 0)
 mesh = SubResource("ArrayMesh_83l1x")
 skeleton = NodePath("")
 
-[node name="StaticBody3D" type="StaticBody3D" parent="recTangle/ramp/Cube"]
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="recTangle/ramp/Cube/StaticBody3D"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Ramp"]
 shape = SubResource("ConcavePolygonShape3D_2xnc0")
 
 [node name="adio" type="RigidBody3D" parent="."]
