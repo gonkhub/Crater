@@ -43,16 +43,15 @@ func _physics_process(delta):
 		_sync_state.rpc(global_position, rotation.y)
 
 func _find_highest_nav_point() -> Vector3:
-	var map = get_world_3d().navigation_map
-	var regions = NavigationServer3D.map_get_regions(map)
+	var regions = get_tree().root.find_children("*", "NavigationRegion3D", true, false)
 	var best: Vector3
 	var found := false
 	for region in regions:
-		var mesh = NavigationServer3D.region_get_navigation_mesh(region)
-		if mesh == null:
+		var nav_mesh: NavigationMesh = region.navigation_mesh
+		if nav_mesh == null:
 			continue
-		var xform = NavigationServer3D.region_get_transform(region)
-		for v in mesh.get_vertices():
+		var xform: Transform3D = region.global_transform
+		for v in nav_mesh.get_vertices():
 			var world_v: Vector3 = xform * v
 			if not found or world_v.y > best.y:
 				best = world_v
