@@ -128,6 +128,8 @@ shadow_mesh = SubResource("ArrayMesh_4r0kb")
 [sub_resource type="BoxShape3D" id="BoxShape3D_adio"]
 size = Vector3(1.863, 0.899, 0.621)
 
+[sub_resource type="NavigationMesh" id="NavigationMesh_world"]
+
 [node name="ClaudesCave" type="Node"]
 script = ExtResource("3_worldg")
 
@@ -175,8 +177,6 @@ skeleton = NodePath("")
 [node name="CollisionShape3D" type="CollisionShape3D" parent="adio"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.643, 0.625, 0.124)
 shape = SubResource("BoxShape3D_adio")
-
-[sub_resource type="NavigationMesh" id="NavigationMesh_world"]
 
 [node name="NavigationRegion3D" type="NavigationRegion3D" parent="."]
 navigation_mesh = SubResource("NavigationMesh_world")
