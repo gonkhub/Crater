@@ -18,7 +18,7 @@ var PUNCH_PUSHBACK = 0.4
 
 var sliding := false
 var tab_mode := false
-var held_object: RigidBody3D = null
+var held_object: PhysicsBody3D = null
 var held_interactable: Interactable = null
 var held_holdable: Holdable = null
 var punch_offset: float = 0.0
@@ -241,6 +241,19 @@ func _on_action_chosen(action: String, target: Node):
 				tab_mode = false
 				if not (_hud and _hud.pause_overlay.visible):
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+			elif target is CharacterBody3D and holdable:
+				held_object = target
+				held_interactable = _find_interactable(target)
+				held_holdable = holdable
+				if target.is_multiplayer_authority():
+					target.set_physics_process(false)
+				if held_interactable:
+					held_interactable.is_held = true
+				if _is_mp_connected():
+					_sync_take_object.rpc(str(held_object.get_path()))
+				tab_mode = false
+				if not (_hud and _hud.pause_overlay.visible):
+					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 		_:
 			var interactable = _find_interactable(target)
 			if interactable:
@@ -259,10 +272,16 @@ func _reset_held_state():
 func _release_object():
 	if not held_object:
 		return
-	held_object.freeze = false
-	held_object.linear_velocity = velocity
-	if _is_mp_connected():
-		_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, velocity)
+	if held_object is RigidBody3D:
+		held_object.freeze = false
+		held_object.linear_velocity = velocity
+		if _is_mp_connected():
+			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, velocity)
+	elif held_object is CharacterBody3D:
+		if held_object.is_multiplayer_authority():
+			held_object.set_physics_process(true)
+		if _is_mp_connected():
+			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, Vector3.ZERO)
 	if held_interactable:
 		held_interactable.is_held = false
 	_reset_held_state()
@@ -307,12 +326,18 @@ func _do_throw():
 	if not held_object:
 		return
 	print("[throw] player %d threw '%s'" % [multiplayer.get_unique_id(), held_object.name])
-	var throw_dir = -camera.global_transform.basis.z
-	var throw_vel = velocity + throw_dir * THROW_SPEED
-	held_object.freeze = false
-	held_object.linear_velocity = throw_vel
-	if _is_mp_connected():
-		_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, throw_vel)
+	if held_object is RigidBody3D:
+		var throw_dir = -camera.global_transform.basis.z
+		var throw_vel = velocity + throw_dir * THROW_SPEED
+		held_object.freeze = false
+		held_object.linear_velocity = throw_vel
+		if _is_mp_connected():
+			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, throw_vel)
+	elif held_object is CharacterBody3D:
+		if held_object.is_multiplayer_authority():
+			held_object.set_physics_process(true)
+		if _is_mp_connected():
+			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, Vector3.ZERO)
 	if held_interactable:
 		held_interactable.is_held = false
 	_reset_held_state()
@@ -362,8 +387,14 @@ func _sync_take_object(obj_path: String):
 		var interactable = _find_interactable(obj)
 		if interactable:
 			interactable.is_held = true
+	elif obj is CharacterBody3D:
+		if obj.is_multiplayer_authority():
+			obj.set_physics_process(false)
+		var interactable = _find_interactable(obj)
+		if interactable:
+			interactable.is_held = true
 	else:
-		push_warning("[sync] _sync_take_object: node not found or not RigidBody3D: %s" % obj_path)
+		push_warning("[sync] _sync_take_object: node not found or unsupported type: %s" % obj_path)
 
 @rpc("any_peer", "unreliable_ordered")
 func _sync_held_object(obj_path: String, xform: Transform3D):
@@ -378,6 +409,13 @@ func _sync_release_object(obj_path: String, pos: Vector3, vel: Vector3):
 		obj.freeze = false
 		obj.global_position = pos
 		obj.linear_velocity = vel
+		var interactable = _find_interactable(obj)
+		if interactable:
+			interactable.is_held = false
+	elif obj is CharacterBody3D:
+		obj.global_position = pos
+		if obj.is_multiplayer_authority():
+			obj.set_physics_process(true)
 		var interactable = _find_interactable(obj)
 		if interactable:
 			interactable.is_held = false
