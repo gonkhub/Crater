@@ -1,4 +1,4 @@
-[gd_scene load_steps=15 format=4 uid="uid://cuoar8pyen07f"]
+[gd_scene load_steps=16 format=4 uid="uid://cuoar8pyen07f"]
 
 [ext_resource type="Script" path="res://world.gd" id="3_worldg"]
 
@@ -175,3 +175,10 @@ skeleton = NodePath("")
 [node name="CollisionShape3D" type="CollisionShape3D" parent="adio"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.643, 0.625, 0.124)
 shape = SubResource("BoxShape3D_adio")
+
+[sub_resource type="NavigationMesh" id="NavigationMesh_world"]
+
+[node name="NavigationRegion3D" type="NavigationRegion3D" parent="."]
+navigation_mesh = SubResource("NavigationMesh_world")
+
+[node name="NPCs" type="Node3D" parent="."]

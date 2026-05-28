@@ -1,6 +1,7 @@
 extends Node
 
 const PLAYER = preload("res://Objects/player.tscn")
+const NPC = preload("res://Objects/npc.tscn")
 
 var hud: Node
 
@@ -9,6 +10,7 @@ func _ready():
 	add_child(hud)
 
 	_register_interactables()
+	_spawn_npcs()
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 
 	if not multiplayer.has_multiplayer_peer():
@@ -66,6 +68,12 @@ func _do_spawn(id: int):
 		or id == multiplayer.get_unique_id()
 	if is_local:
 		player.init_local(hud)
+
+func _spawn_npcs():
+	var npc = NPC.instantiate()
+	npc.name = "Villager"
+	npc.position = Vector3(3, 1, 3)
+	$NPCs.add_child(npc)
 
 func _register_interactables():
 	_make_interactable("adio", "Adio", [], true)
