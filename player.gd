@@ -404,7 +404,7 @@ func _carry_update(delta: float):
 	_sway_pos += _sway_vel * delta
 
 	# ── Object transform ──────────────────────────────────────────────────────
-	var rotation_offset := (Basis.from_euler(held_holdable.hold_rotation * (PI / 180.0)) if held_holdable else Basis.IDENTITY)
+	var rotation_offset: Basis = Basis.from_euler(held_holdable.hold_rotation * (PI / 180.0)) if held_holdable else Basis.IDENTITY
 
 	var cam_basis := camera.global_transform.basis
 	var cam_pos   := camera.global_position
