@@ -18,6 +18,11 @@ func _ready():
 	hud = preload("res://hud.tscn").instantiate()
 	add_child(hud)
 
+	# Generate trimesh collision for the cave at runtime.
+	# The GLB scene importer ignores _subresources physics flags;
+	# create_trimesh_collision() is the reliable alternative.
+	_generate_mesh_collision($"NavigationRegion3D/Cave Enterway GLB")
+
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 
 	if not multiplayer.has_multiplayer_peer():
@@ -76,15 +81,22 @@ func queue_net_target(path: String, pos: Vector3, rot: Quaternion) -> void:
 		"ang_vel": Vector3.ZERO
 	}
 
-# ── Client: lerp world objects toward server targets ────────────────────────
+# ── All peers: lerp world objects toward their net targets ──────────────────
+# Server applies lerp only for FROZEN (held) objects — it gets those via
+# queue_net_target() from _sync_held_object RPCs sent by holding clients.
+# Unfrozen objects on the server are physics-authoritative, so we skip them.
+# Clients lerp everything: frozen objects (held) + free objects (broadcast).
 
 func _process(delta: float) -> void:
-	if not multiplayer.has_multiplayer_peer() or multiplayer.is_server():
+	if not multiplayer.has_multiplayer_peer():
 		return
 	var t: float = minf(delta * 15.0, 1.0)
 	for path in _net_targets:
 		var obj: Node = get_tree().root.get_node_or_null(path)
 		if not obj:
+			continue
+		# Server: physics owns unfrozen RigidBodies — don't fight the simulation.
+		if multiplayer.is_server() and obj is RigidBody3D and not obj.freeze:
 			continue
 		var tgt: Dictionary = _net_targets[path]
 		var dist: float = obj.global_position.distance_to(tgt["pos"])
@@ -186,6 +198,17 @@ func _sync_world_object(obj_path: String, xform: Transform3D, vel: Vector3, is_h
 			interactable.is_held = true
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+## Recursively walks a scene node and calls create_trimesh_collision() on
+## every MeshInstance3D found. Used to generate runtime collision for GLB
+## imports where the _subresources collision flag is unreliable.
+func _generate_mesh_collision(node: Node) -> void:
+	if not node:
+		return
+	if node is MeshInstance3D:
+		node.create_trimesh_collision()
+	for child in node.get_children():
+		_generate_mesh_collision(child)
 
 func _do_remove(id: int):
 	var node = $Players.get_node_or_null(str(id))
