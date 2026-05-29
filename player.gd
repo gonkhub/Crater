@@ -49,6 +49,12 @@ var punch_peak_speed: float = 0.0
 var punch_target_name: String = ""
 var _hud: Node = null
 
+# ── Remote-player lerp targets (non-authority only) ─────────────────────────
+var _net_pos:        Vector3 = Vector3.ZERO
+var _net_rot_y:      float   = 0.0
+var _net_cam_x:      float   = 0.0
+var _has_net_state:  bool    = false
+
 @onready var camera: Camera3D = $Camera3D
 
 var _test_params := PhysicsTestMotionParameters3D.new()
@@ -80,8 +86,17 @@ func init_local(hud_node: Node) -> void:
 	_hud.action_chosen.connect(_on_action_chosen)
 	_hud.set_local_player(self)
 
+func _lerp_remote_state(delta: float) -> void:
+	if not _has_net_state:
+		return
+	var t: float = minf(delta * 20.0, 1.0)
+	global_position = global_position.lerp(_net_pos, t)
+	rotation.y      = lerp_angle(rotation.y,      _net_rot_y, t)
+	camera.rotation.x = lerp_angle(camera.rotation.x, _net_cam_x, t)
+
 func _process(delta):
 	if not is_multiplayer_authority():
+		_lerp_remote_state(delta)
 		return
 	var prev_cooldown = punch_cooldown
 	punch_cooldown = maxf(punch_cooldown - delta, 0.0)
@@ -329,14 +344,15 @@ func _release_object():
 		held_object.continuous_cd = true   # prevent tunnelling through thin geometry
 		held_object.freeze = false
 		held_object.linear_velocity = velocity
-		held_object.angular_velocity = held_object.global_transform.basis.y * _roll_ang_vel
+		var ang_vel: Vector3 = held_object.global_transform.basis.y * _roll_ang_vel
+		held_object.angular_velocity = ang_vel
 		if _is_mp_connected():
-			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, velocity)
+			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, velocity, ang_vel)
 	elif held_object is CharacterBody3D:
 		if held_object.is_multiplayer_authority():
 			held_object.set_physics_process(true)
 		if _is_mp_connected():
-			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, Vector3.ZERO)
+			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, Vector3.ZERO, Vector3.ZERO)
 	if held_interactable:
 		held_interactable.is_held = false
 	_reset_held_state()
@@ -382,6 +398,10 @@ func _do_punch():
 	var hit = get_world_3d().direct_space_state.intersect_ray(params)
 	if hit and hit.collider is RigidBody3D:
 		hit.collider.apply_central_impulse(punch_dir * eff_impulse)
+		# Non-host clients: forward the impulse to the host so authoritative
+		# physics drives the result and it propagates to all peers via the broadcast.
+		if _is_mp_connected() and not multiplayer.is_server():
+			_sync_punch_impulse.rpc_id(1, str(hit.collider.get_path()), punch_dir * eff_impulse)
 
 func _do_throw():
 	if not held_object:
@@ -391,17 +411,18 @@ func _do_throw():
 	if held_object is RigidBody3D:
 		var throw_dir = -camera.global_transform.basis.z
 		var throw_vel = velocity + throw_dir * eff_throw_speed
+		var throw_ang_vel: Vector3 = held_object.global_transform.basis.y * _roll_ang_vel
 		held_object.continuous_cd = true   # prevent tunnelling through thin geometry
 		held_object.freeze = false
 		held_object.linear_velocity = throw_vel
-		held_object.angular_velocity = held_object.global_transform.basis.y * _roll_ang_vel
+		held_object.angular_velocity = throw_ang_vel
 		if _is_mp_connected():
-			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, throw_vel)
+			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, throw_vel, throw_ang_vel)
 	elif held_object is CharacterBody3D:
 		if held_object.is_multiplayer_authority():
 			held_object.set_physics_process(true)
 		if _is_mp_connected():
-			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, Vector3.ZERO)
+			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, Vector3.ZERO, Vector3.ZERO)
 	if held_interactable:
 		held_interactable.is_held = false
 	_reset_held_state()
@@ -670,17 +691,24 @@ func _sync_take_object(obj_path: String):
 
 @rpc("any_peer", "unreliable_ordered")
 func _sync_held_object(obj_path: String, xform: Transform3D):
-	var obj = get_tree().root.get_node_or_null(obj_path)
-	if obj:
-		obj.global_transform = xform
+	# Route through world's net-target table so the lerp system handles smoothing.
+	var world: Node = get_parent().get_parent()
+	if world and world.has_method("queue_net_target"):
+		world.queue_net_target(obj_path, xform.origin, xform.basis.get_rotation_quaternion())
+	else:
+		var obj = get_tree().root.get_node_or_null(obj_path)
+		if obj:
+			obj.global_transform = xform
 
 @rpc("any_peer", "reliable")
-func _sync_release_object(obj_path: String, pos: Vector3, vel: Vector3):
+func _sync_release_object(obj_path: String, pos: Vector3, vel: Vector3, ang_vel: Vector3):
 	var obj = get_tree().root.get_node_or_null(obj_path)
 	if obj is RigidBody3D:
+		obj.continuous_cd = true   # prevent tunnelling on all clients
 		obj.freeze = false
 		obj.global_position = pos
 		obj.linear_velocity = vel
+		obj.angular_velocity = ang_vel
 		var interactable = _find_interactable(obj)
 		if interactable:
 			interactable.is_held = false
@@ -696,6 +724,14 @@ func _sync_release_object(obj_path: String, pos: Vector3, vel: Vector3):
 
 @rpc("any_peer", "unreliable_ordered")
 func _sync_state(pos: Vector3, body_y: float, cam_x: float):
-	global_position = pos
-	rotation.y = body_y
-	camera.rotation.x = cam_x
+	_net_pos = pos; _net_rot_y = body_y; _net_cam_x = cam_x; _has_net_state = true
+
+## Client sends punch impulse to the host; host applies it to the live physics
+## object so the authoritative simulation drives the result.
+@rpc("any_peer", "reliable")
+func _sync_punch_impulse(obj_path: String, impulse: Vector3):
+	if not multiplayer.is_server():
+		return
+	var obj = get_tree().root.get_node_or_null(obj_path)
+	if obj is RigidBody3D and not obj.freeze:
+		obj.apply_central_impulse(impulse)
