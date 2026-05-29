@@ -3,7 +3,7 @@ extends Node
 
 @export var hold_rotation: Vector3 = Vector3.ZERO
 @export var hold_pivot: float = 0.15  # world-space distance from object centre to the far (screen-centre) end
-                                      # 0 = static hold (no sway). Default 0.15 gives subtle sway for compact objects.
+									  # 0 = static hold (no sway). Default 0.15 gives subtle sway for compact objects.
 @export var m1_action: String = "punch"
 @export var m2_action: String = ""
 @export var scroll_up_action: String = "throw"
