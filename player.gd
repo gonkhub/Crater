@@ -19,6 +19,8 @@ var SWAY_SPRING = 80.0        # spring constant pulling close end onto the circl
 var SWAY_DAMPING = 5.0        # exponential damping rate (per second)
 var SWAY_MOUSE_SCALE = 0.004  # pixels → sway velocity (units/s)
 var SWAY_TILT_SCALE = 0.5     # sway_pos units → tilt radians (no-pivot objects only)
+var SWAY_DEAD_RADIUS = 0.15   # inner dead-zone radius; centre repels the close end outward
+var SWAY_PUNCH_SPRING = 500.0 # spring constant snapping sway to centre during a punch
 
 var sliding := false
 var tab_mode := false
@@ -374,34 +376,37 @@ func _carry_update(delta: float):
 		punch_offset = move_toward(punch_offset, 0.0, PUNCH_RETURN_SPEED * delta)
 
 	# ── Sway physics ──────────────────────────────────────────────────────────
-	# The far (screen-centre) end of the object is anchored at the camera's
-	# forward look point.  The close (player-side) end floats on an imaginary
-	# circle of radius = hold_pivot, pushed back onto it by an elastic spring.
-	# When hold_pivot == 0 the same spring collapses to a centre-restore, and
-	# the sway is expressed purely as a tilt rotation around the carry position.
+	# The far (screen-centre) end is anchored at the camera forward point.
+	# The close (player-side) end floats on a circle of radius = hold_pivot,
+	# pushed back onto it by an elastic spring and repelled from the centre
+	# by a dead-zone spring so it never passes through zero.
+	# During a punch the sway is overridden: a strong spring collapses it to
+	# centre so the object straightens into alignment with the player's view.
 	var pivot: float = held_holdable.hold_pivot if held_holdable else 0.0
 
-	# Consume accumulated mouse delta — drives the close end laterally.
-	# Negated: looking left → close end swings right, looking down → swings up.
+	# Mouse input (negated: looking left/down pushes close end right/up)
 	_sway_vel -= _mouse_delta * SWAY_MOUSE_SCALE
 	_mouse_delta = Vector2.ZERO
 
-	if pivot > 0.001:
-		# Elastic force: pull _sway_pos toward the circle of radius = pivot.
-		# Force = k * (R - |pos|) * pos_dir  →  positive inside circle, negative outside.
-		var dist := _sway_pos.length()
-		if dist > 0.0001:
-			_sway_vel += (pivot - dist) * (_sway_pos / dist) * SWAY_SPRING * delta
-		else:
-			# At the exact centre there is no direction; give a downward nudge
-			# so the spring settles to the natural bottom-of-circle rest.
-			_sway_vel += Vector2(0.0, -1.0) * pivot * SWAY_SPRING * delta
-	else:
-		# No pivot: spring toward the centre (pure tilt effect)
-		_sway_vel -= _sway_pos * SWAY_SPRING * delta
+	var dist: float = _sway_pos.length()
+	var sway_dir: Vector2 = _sway_pos / dist if dist > 0.0001 else Vector2(0.0, -1.0)
 
-	# Exponential damping (applied uniformly regardless of punch state)
-	_sway_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * delta)
+	if punch_held:
+		# Straighten: strong spring toward centre + heavy damping
+		_sway_vel -= _sway_pos * SWAY_PUNCH_SPRING * delta
+		_sway_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * 4.0 * delta)
+	elif pivot > 0.001:
+		# Circle spring: elastic force toward the circle of radius = pivot
+		_sway_vel += (pivot - dist) * sway_dir * SWAY_SPRING * delta
+		# Dead-zone: extra outward push when inside SWAY_DEAD_RADIUS
+		if dist < SWAY_DEAD_RADIUS:
+			_sway_vel += (SWAY_DEAD_RADIUS - dist) * sway_dir * SWAY_SPRING * 3.0 * delta
+		_sway_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * delta)
+	else:
+		# No pivot: spring toward centre (pure tilt rotation)
+		_sway_vel -= _sway_pos * SWAY_SPRING * delta
+		_sway_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * delta)
+
 	_sway_pos += _sway_vel * delta
 
 	# ── Object transform ──────────────────────────────────────────────────────
