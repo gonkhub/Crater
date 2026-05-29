@@ -100,8 +100,11 @@ func _process(delta: float) -> void:
 			continue
 		var tgt: Dictionary = _net_targets[path]
 		var dist: float = obj.global_position.distance_to(tgt["pos"])
-		if dist > 0.5:
-			# Large error: snap instantly to prevent rubber-banding
+		if dist > 1.5:
+			# Major desync (>1.5 m): snap instantly.
+			# Threshold raised from 0.5 m — at 15 m/s throw speed and 20 hz
+			# broadcast, in-flight objects can legitimately be 0.75 m ahead of
+			# the last packet, so 0.5 m caused false teleport-snaps.
 			obj.global_position = tgt["pos"]
 			obj.global_transform.basis = Basis(tgt["rot"])
 		else:
