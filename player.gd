@@ -412,6 +412,7 @@ func _carry_update(delta: float):
 	var w_punch_accel: float = dyn.get("punch_accel",     PUNCH_ACCEL)
 	var w_peak_hold:   float = dyn.get("punch_peak_hold", 0.10)
 	var w_settle_spd:  float = dyn.get("punch_settle_spd", PUNCH_RETURN_SPEED * 0.4)
+	var w_sway_sens:   float = dyn.get("sway_sensitivity", 30.0)
 
 	# ── Punch offset ─────────────────────────────────────────────────────────
 	# Four phases while M1 is held:
@@ -457,11 +458,14 @@ func _carry_update(delta: float):
 	#   there and holds it, preventing wild orbiting from fast mouse input.
 	# _roll_angle — axial spin; still impulse-driven (unchanged).
 
-	# Update sway target: mouse direction → opposite edge of circle.
-	# Only updates when the mouse is actually moving (avoids jitter at rest).
+	# Update sway target: mouse speed sets amplitude, direction sets which edge.
+	# A gentle nudge moves the target partway across the circle; a hard flick
+	# reaches the full opposite edge. Amplitude is weight-scaled via sway_sensitivity.
 	var mouse_len: float = _mouse_delta.length()
 	if mouse_len > 2.0:
-		_sway_target = atan2(_mouse_delta.y, -_mouse_delta.x)
+		var direction: float = atan2(_mouse_delta.y, -_mouse_delta.x)
+		var amplitude: float = clampf(mouse_len / w_sway_sens, 0.0, 1.0)
+		_sway_target = lerp_angle(-PI * 0.5, direction, amplitude)
 
 	# Axial roll — tangential impulse, same model as before
 	var tangent: Vector2 = Vector2(-sin(_sway_angle), cos(_sway_angle))
