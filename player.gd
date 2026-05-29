@@ -27,7 +27,9 @@ var sliding := false
 var tab_mode := false
 var _sway_angle: float = -PI / 2.0   # position of close end on the circle (−½π = bottom)
 var _sway_ang_vel: float = 0.0       # position angular velocity (rad/s)
-var _sway_target: float = -PI / 2.0  # target sway angle driven by mouse direction
+var _sway_target:    float = -PI / 2.0  # spring target angle
+var _sway_amplitude: float = 0.0        # current deflection 0 (rest) → 1 (full opposite edge)
+var _sway_direction: float = 0.0        # last mouse direction angle (for change detection)
 var _roll_angle: float = -PI / 2.0   # axial spin angle (starts matched to sway rest)
 var _roll_ang_vel: float = 0.0       # axial spin angular velocity (rad/s)
 var _mouse_delta: Vector2 = Vector2.ZERO # accumulated mouse movement since last carry update
@@ -305,9 +307,11 @@ func _reset_held_state():
 	punch_returning = false
 	punch_cooldown = 0.0
 	punch_measuring = false
-	_sway_angle = -PI / 2.0
-	_sway_ang_vel = 0.0
-	_sway_target = -PI / 2.0
+	_sway_angle     = -PI / 2.0
+	_sway_ang_vel   = 0.0
+	_sway_target    = -PI / 2.0
+	_sway_amplitude = 0.0
+	_sway_direction = 0.0
 	_roll_angle = -PI / 2.0
 	_roll_ang_vel = 0.0
 	_mouse_delta = Vector2.ZERO
@@ -458,14 +462,24 @@ func _carry_update(delta: float):
 	#   there and holds it, preventing wild orbiting from fast mouse input.
 	# _roll_angle — axial spin; still impulse-driven (unchanged).
 
-	# Update sway target: mouse speed sets amplitude, direction sets which edge.
-	# A gentle nudge moves the target partway across the circle; a hard flick
-	# reaches the full opposite edge. Amplitude is weight-scaled via sway_sensitivity.
+	# Update sway target from mouse input.
+	# _sway_amplitude tracks how far across the circle the object sits (0=rest, 1=full edge).
+	# Amplitude can only INCREASE for the same direction — it never retreats mid-gesture,
+	# so the target stays locked after a flick even as the mouse decelerates.
+	# A significant direction reversal (>108°) resets amplitude to the new flick's strength.
 	var mouse_len: float = _mouse_delta.length()
 	if mouse_len > 2.0:
-		var direction: float = atan2(_mouse_delta.y, -_mouse_delta.x)
-		var amplitude: float = clampf(mouse_len / w_sway_sens, 0.0, 1.0)
-		_sway_target = lerp_angle(-PI * 0.5, direction, amplitude)
+		var new_dir: float  = atan2(_mouse_delta.y, -_mouse_delta.x)
+		var new_amp: float  = clampf(mouse_len / w_sway_sens, 0.0, 1.0)
+		var dir_diff: float = abs(fposmod(new_dir - _sway_direction + PI, TAU) - PI)
+		if dir_diff > PI * 0.6:
+			# Direction changed substantially — start fresh at the new flick's amplitude
+			_sway_amplitude = new_amp
+		else:
+			# Same direction — lock in the peak, never let it retreat
+			_sway_amplitude = maxf(_sway_amplitude, new_amp)
+		_sway_direction = new_dir
+		_sway_target    = lerp_angle(-PI * 0.5, _sway_direction, _sway_amplitude)
 
 	# Axial roll — tangential impulse, same model as before
 	var tangent: Vector2 = Vector2(-sin(_sway_angle), cos(_sway_angle))
