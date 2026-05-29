@@ -10,13 +10,20 @@ enum Weight { LIGHT, MEDIUM, HEAVY }
 #   sway_damping     — how quickly angular position decays  (higher = snappier)
 #   roll_damping     — how quickly axial spin decays        (lower = coasts longer)
 #   max_roll_speed   — hard cap on axial spin (rad/s)
+#   punch_pull        — player velocity impulse (m/s) fired once when punch peaks
+#   punch_accel       — extend-phase acceleration (m/s²); higher = snappier punch
+#   punch_peak_hold   — seconds to dwell at max extension before settling
+#   punch_settle_spd  — retraction speed (m/s) from peak to the M1-held position
 const _WEIGHT_PHYSICS = [
 	# LIGHT  — nimble, quick to respond, moderate spin persistence
-	{ "sway_mouse_scale": 0.010, "sway_damping": 0.30, "roll_damping": 0.08, "max_roll_speed": 15.0 },
+	{ "sway_mouse_scale": 0.010, "sway_damping": 0.30, "roll_damping": 0.08, "max_roll_speed": 15.0,
+	  "punch_pull":  2.0, "punch_accel": 220.0, "punch_peak_hold": 0.06, "punch_settle_spd": 1.2 },
 	# MEDIUM — heavier feel, more resistance to input, spin coasts longer
-	{ "sway_mouse_scale": 0.006, "sway_damping": 0.40, "roll_damping": 0.05, "max_roll_speed":  8.0 },
+	{ "sway_mouse_scale": 0.006, "sway_damping": 0.40, "roll_damping": 0.05, "max_roll_speed":  8.0,
+	  "punch_pull":  5.0, "punch_accel": 120.0, "punch_peak_hold": 0.12, "punch_settle_spd": 0.9 },
 	# HEAVY  — ponderous, hard to start moving, very persistent spin (flywheel)
-	{ "sway_mouse_scale": 0.003, "sway_damping": 0.60, "roll_damping": 0.02, "max_roll_speed":  4.0 },
+	{ "sway_mouse_scale": 0.003, "sway_damping": 0.60, "roll_damping": 0.02, "max_roll_speed":  4.0,
+	  "punch_pull": 10.0, "punch_accel":  55.0, "punch_peak_hold": 0.20, "punch_settle_spd": 0.6 },
 ]
 
 # ── Hold ────────────────────────────────────────────────────────────────────

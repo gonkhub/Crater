@@ -17,6 +17,7 @@ var THROW_SPEED = 15.0
 var MAX_CARRY_DIST = 7.0
 var PUNCH_COOLDOWN = 0.5
 var PUNCH_PUSHBACK = 0.4
+var PUNCH_SETTLE_FRAC: float = 0.65  # settle at this fraction of PUNCH_DISTANCE while M1 held
 var SWAY_DAMPING = 0.3        # position damping rate (per second)
 var ROLL_DAMPING = 0.08       # axial-spin damping — much lower so spin coasts freely
 var SWAY_MOUSE_SCALE = 0.008  # pixels → angular velocity (rad/s, scaled by 1/pivot)
@@ -36,6 +37,10 @@ var punch_offset: float = 0.0
 var punch_velocity: float = 0.0
 var punch_held: bool = false
 var punch_cooldown: float = 0.0
+var punch_peaked: bool = false
+var punch_hold_timer: float = 0.0   # countdown at max extension before settling begins
+var punch_start_angle: float = 0.0  # sway angle when punch was initiated
+var punch_returning: bool = false   # true while spring is guiding sway to opposite side
 var punch_measuring: bool = false
 var punch_peak_speed: float = 0.0
 var punch_target_name: String = ""
@@ -246,6 +251,8 @@ func _on_action_chosen(action: String, target: Node):
 			var holdable = _find_holdable(target)
 			if target is RigidBody3D and holdable:
 				held_object = target
+				held_object.add_collision_exception_with(self)
+				add_collision_exception_with(held_object)
 				held_object.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
 				held_object.freeze = true
 				held_interactable = _find_interactable(target)
@@ -259,6 +266,8 @@ func _on_action_chosen(action: String, target: Node):
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 			elif target is CharacterBody3D and holdable:
 				held_object = target
+				held_object.add_collision_exception_with(self)
+				add_collision_exception_with(held_object)
 				held_interactable = _find_interactable(target)
 				held_holdable = holdable
 				if target.is_multiplayer_authority():
@@ -280,12 +289,19 @@ func _on_action_chosen(action: String, target: Node):
 				interactable.action_performed.emit(action, self)
 
 func _reset_held_state():
+	if is_instance_valid(held_object):
+		held_object.remove_collision_exception_with(self)
+		remove_collision_exception_with(held_object)
 	held_object = null
 	held_interactable = null
 	held_holdable = null
 	punch_offset = 0.0
 	punch_velocity = 0.0
 	punch_held = false
+	punch_peaked = false
+	punch_hold_timer = 0.0
+	punch_start_angle = 0.0
+	punch_returning = false
 	punch_cooldown = 0.0
 	punch_measuring = false
 	_sway_angle = -PI / 2.0
@@ -301,6 +317,7 @@ func _release_object():
 		held_object.continuous_cd = true   # prevent tunnelling through thin geometry
 		held_object.freeze = false
 		held_object.linear_velocity = velocity
+		held_object.angular_velocity = held_object.global_transform.basis.y * _roll_ang_vel
 		if _is_mp_connected():
 			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, velocity)
 	elif held_object is CharacterBody3D:
@@ -335,6 +352,7 @@ func _do_punch():
 	punch_cooldown = PUNCH_COOLDOWN
 	punch_held = true
 	punch_velocity = 0.0
+	punch_start_angle = _sway_angle
 	punch_measuring = true
 	punch_peak_speed = 0.0
 	punch_target_name = held_object.name
@@ -358,6 +376,7 @@ func _do_throw():
 		held_object.continuous_cd = true   # prevent tunnelling through thin geometry
 		held_object.freeze = false
 		held_object.linear_velocity = throw_vel
+		held_object.angular_velocity = held_object.global_transform.basis.y * _roll_ang_vel
 		if _is_mp_connected():
 			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, throw_vel)
 	elif held_object is CharacterBody3D:
@@ -379,12 +398,53 @@ func _carry_update(delta: float):
 		_release_object()
 		return
 
+	# ── Weight bucket dynamics ────────────────────────────────────────────────
+	# Fetched once per frame so punch-pull and sway share the same values.
+	var pivot: float     = held_holdable.hold_pivot if held_holdable else 0.0
+	var dyn: Dictionary  = held_holdable.get_dynamics() if held_holdable else {}
+	var w_mouse:  float  = dyn.get("sway_mouse_scale", SWAY_MOUSE_SCALE)
+	var w_sway:   float  = dyn.get("sway_damping",     SWAY_DAMPING)
+	var w_roll:   float  = dyn.get("roll_damping",      ROLL_DAMPING)
+	var w_maxspin: float = dyn.get("max_roll_speed",    15.0)
+	var w_pull:        float = dyn.get("punch_pull",       0.0)
+	var w_punch_accel: float = dyn.get("punch_accel",     PUNCH_ACCEL)
+	var w_peak_hold:   float = dyn.get("punch_peak_hold", 0.10)
+	var w_settle_spd:  float = dyn.get("punch_settle_spd", PUNCH_RETURN_SPEED * 0.4)
+
 	# ── Punch offset ─────────────────────────────────────────────────────────
+	# Four phases while M1 is held:
+	#   1. Extending  — weight-scaled acceleration to PUNCH_DISTANCE.
+	#   2. Peak hold  — dwells at max for w_peak_hold seconds; fires player-pull once.
+	#   3. Settling   — slow retraction (w_settle_spd) to the idle M1 position.
+	# When M1 is released (Phase 4):
+	#   offset returns to 0; sway springs to the opposite side of the circle.
 	if punch_held:
-		if punch_offset < PUNCH_DISTANCE:
-			punch_velocity += PUNCH_ACCEL * delta
-			punch_offset = minf(punch_offset + punch_velocity * delta, PUNCH_DISTANCE)
+		if not punch_peaked:
+			# Phase 1: weight-scaled extend
+			if punch_offset < PUNCH_DISTANCE:
+				punch_velocity += w_punch_accel * delta
+				punch_offset = minf(punch_offset + punch_velocity * delta, PUNCH_DISTANCE)
+			# Transition to Phase 2 on first frame at max
+			if punch_offset >= PUNCH_DISTANCE:
+				punch_peaked = true
+				punch_hold_timer = w_peak_hold
+				if w_pull > 0.0:
+					velocity += -camera.global_transform.basis.z * w_pull
+		elif punch_hold_timer > 0.0:
+			# Phase 2: dwell at max extension
+			punch_hold_timer -= delta
+			punch_velocity = 0.0
+			punch_offset = PUNCH_DISTANCE
+		else:
+			# Phase 3: slow retraction to the M1-held settle position
+			punch_velocity = 0.0
+			punch_offset = move_toward(punch_offset, PUNCH_DISTANCE * PUNCH_SETTLE_FRAC, w_settle_spd * delta)
 	else:
+		# Phase 4: M1 released — retract offset; activate opposite-side sway spring
+		if punch_peaked:
+			punch_returning = true
+		punch_peaked = false
+		punch_hold_timer = 0.0
 		punch_velocity = 0.0
 		punch_offset = move_toward(punch_offset, 0.0, PUNCH_RETURN_SPEED * delta)
 
@@ -394,13 +454,6 @@ func _carry_update(delta: float):
 	#
 	# Both receive the same mouse impulse (tangential projection), but different
 	# damping rates cause them to diverge — no tidal locking.
-	# All rate constants come from the Holdable weight bucket.
-	var pivot: float = held_holdable.hold_pivot if held_holdable else 0.0
-	var dyn: Dictionary    = held_holdable.get_dynamics() if held_holdable else {}
-	var w_mouse:  float    = dyn.get("sway_mouse_scale", SWAY_MOUSE_SCALE)
-	var w_sway:   float    = dyn.get("sway_damping",     SWAY_DAMPING)
-	var w_roll:   float    = dyn.get("roll_damping",      ROLL_DAMPING)
-	var w_maxspin: float   = dyn.get("max_roll_speed",    15.0)
 
 	var tangent: Vector2 = Vector2(-sin(_sway_angle), cos(_sway_angle))
 	var impulse: float = -_mouse_delta.dot(tangent) * w_mouse / maxf(pivot, 0.25)
@@ -408,8 +461,21 @@ func _carry_update(delta: float):
 	_roll_ang_vel += impulse   # same kick; diverges over time due to different damping
 	_mouse_delta = Vector2.ZERO
 
-	if punch_held:
-		# Position settles quickly when straightening
+	if punch_returning and not punch_held:
+		# Critically-damped spring pulls sway toward the opposite side of the circle.
+		# Spring stiffness is weight-scaled: lighter objects snap back faster.
+		var return_target: float = punch_start_angle + PI
+		var angle_err: float     = fposmod(return_target - _sway_angle + PI, TAU) - PI
+		var spring_k: float      = 36.0 * (0.3 / maxf(w_sway, 0.01))
+		var spring_d: float      = 2.0 * sqrt(spring_k)   # critically damped, no overshoot
+		_sway_ang_vel += angle_err * spring_k * delta
+		_sway_ang_vel *= maxf(0.0, 1.0 - spring_d * delta)
+		_sway_angle   += _sway_ang_vel * delta
+		# Exit spring once the offset has fully retracted and sway is near target
+		if punch_offset <= 0.001 and abs(angle_err) < 0.08 and abs(_sway_ang_vel) < 0.1:
+			punch_returning = false
+	elif punch_held:
+		# Suppress sway quickly so the object straightens during a punch
 		_sway_ang_vel *= maxf(0.0, 1.0 - w_sway * 8.0 * delta)
 	else:
 		_sway_ang_vel *= maxf(0.0, 1.0 - w_sway * delta)
