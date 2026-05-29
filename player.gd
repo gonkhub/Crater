@@ -27,6 +27,7 @@ var sliding := false
 var tab_mode := false
 var _sway_angle: float = -PI / 2.0   # position of close end on the circle (−½π = bottom)
 var _sway_ang_vel: float = 0.0       # position angular velocity (rad/s)
+var _sway_target: float = -PI / 2.0  # target sway angle driven by mouse direction
 var _roll_angle: float = -PI / 2.0   # axial spin angle (starts matched to sway rest)
 var _roll_ang_vel: float = 0.0       # axial spin angular velocity (rad/s)
 var _mouse_delta: Vector2 = Vector2.ZERO # accumulated mouse movement since last carry update
@@ -306,6 +307,7 @@ func _reset_held_state():
 	punch_measuring = false
 	_sway_angle = -PI / 2.0
 	_sway_ang_vel = 0.0
+	_sway_target = -PI / 2.0
 	_roll_angle = -PI / 2.0
 	_roll_ang_vel = 0.0
 	_mouse_delta = Vector2.ZERO
@@ -448,37 +450,50 @@ func _carry_update(delta: float):
 		punch_velocity = 0.0
 		punch_offset = move_toward(punch_offset, 0.0, PUNCH_RETURN_SPEED * delta)
 
-	# ── Sway physics (two independent angular degrees of freedom) ───────────
-	# _sway_angle / _sway_ang_vel — position of the close end on the anchor circle
-	# _roll_angle  / _roll_ang_vel — axial spin around the object's long axis
-	#
-	# Both receive the same mouse impulse (tangential projection), but different
-	# damping rates cause them to diverge — no tidal locking.
+	# ── Sway + roll (two independent angular degrees of freedom) ────────────
+	# _sway_angle — position of close end on the sway circle.
+	#   Mouse direction sets a TARGET ANGLE on the opposite side of the circle
+	#   (flick right → target = left edge). A weight-scaled spring pulls sway
+	#   there and holds it, preventing wild orbiting from fast mouse input.
+	# _roll_angle — axial spin; still impulse-driven (unchanged).
 
+	# Update sway target: mouse direction → opposite edge of circle.
+	# Only updates when the mouse is actually moving (avoids jitter at rest).
+	var mouse_len: float = _mouse_delta.length()
+	if mouse_len > 2.0:
+		_sway_target = atan2(_mouse_delta.y, -_mouse_delta.x)
+
+	# Axial roll — tangential impulse, same model as before
 	var tangent: Vector2 = Vector2(-sin(_sway_angle), cos(_sway_angle))
-	var impulse: float = -_mouse_delta.dot(tangent) * w_mouse / maxf(pivot, 0.25)
-	_sway_ang_vel += impulse
-	_roll_ang_vel += impulse   # same kick; diverges over time due to different damping
+	_roll_ang_vel += -_mouse_delta.dot(tangent) * w_mouse / maxf(pivot, 0.25)
 	_mouse_delta = Vector2.ZERO
 
 	if punch_returning and not punch_held:
-		# Critically-damped spring pulls sway toward the opposite side of the circle.
+		# Critically-damped spring pulls sway to the opposite side of the circle.
 		# Spring stiffness is weight-scaled: lighter objects snap back faster.
 		var return_target: float = punch_start_angle + PI
 		var angle_err: float     = fposmod(return_target - _sway_angle + PI, TAU) - PI
 		var spring_k: float      = 36.0 * (0.3 / maxf(w_sway, 0.01))
-		var spring_d: float      = 2.0 * sqrt(spring_k)   # critically damped, no overshoot
+		var spring_d: float      = 2.0 * sqrt(spring_k)   # critically damped
 		_sway_ang_vel += angle_err * spring_k * delta
 		_sway_ang_vel *= maxf(0.0, 1.0 - spring_d * delta)
 		_sway_angle   += _sway_ang_vel * delta
-		# Exit spring once the offset has fully retracted and sway is near target
 		if punch_offset <= 0.001 and abs(angle_err) < 0.08 and abs(_sway_ang_vel) < 0.1:
 			punch_returning = false
 	elif punch_held:
 		# Suppress sway quickly so the object straightens during a punch
 		_sway_ang_vel *= maxf(0.0, 1.0 - w_sway * 8.0 * delta)
 	else:
-		_sway_ang_vel *= maxf(0.0, 1.0 - w_sway * delta)
+		# Spring toward the mouse-direction target.
+		# 0.85 damping ratio = slightly underdamped: a gentle wobble at the edge
+		# gives the "wiggle room" feel without ever orbiting past it.
+		var sway_err: float = fposmod(_sway_target - _sway_angle + PI, TAU) - PI
+		var sway_k:   float = dyn.get("sway_spring_k",  10.0)
+		var sway_d:   float = 2.0 * sqrt(sway_k) * 0.85  # slightly underdamped
+		var sway_max: float = dyn.get("sway_max_speed",  6.0)
+		_sway_ang_vel += sway_err * sway_k * delta
+		_sway_ang_vel  = clampf(_sway_ang_vel, -sway_max, sway_max)
+		_sway_ang_vel *= maxf(0.0, 1.0 - sway_d * delta)
 		_sway_angle   += _sway_ang_vel * delta
 
 	# Roll always updates — keeps spinning through punches (spinning stab effect)

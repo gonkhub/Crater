@@ -6,23 +6,28 @@ enum Weight { LIGHT, MEDIUM, HEAVY }
 # Per-weight hold dynamics. Array index matches the Weight enum value.
 # To tune feel system-wide, edit these rows.
 # To tune a single object, use the Physics Overrides exports below.
-#   sway_mouse_scale — how strongly mouse input drives position/spin impulse
-#   sway_damping     — how quickly angular position decays  (higher = snappier)
+#   sway_mouse_scale — roll (axial spin) sensitivity to mouse input
+#   sway_damping     — damping used during punch phases (higher = snappier)
+#   sway_spring_k    — stiffness of the spring pulling sway to the mouse-target edge
+#   sway_max_speed   — hard cap on sway angular velocity (rad/s)
 #   roll_damping     — how quickly axial spin decays        (lower = coasts longer)
 #   max_roll_speed   — hard cap on axial spin (rad/s)
-#   punch_pull        — player velocity impulse (m/s) fired once when punch peaks
-#   punch_accel       — extend-phase acceleration (m/s²); higher = snappier punch
-#   punch_peak_hold   — seconds to dwell at max extension before settling
-#   punch_settle_spd  — retraction speed (m/s) from peak to the M1-held position
+#   punch_pull       — player velocity impulse (m/s) fired once when punch peaks
+#   punch_accel      — extend-phase acceleration (m/s²); higher = snappier punch
+#   punch_peak_hold  — seconds to dwell at max extension before settling
+#   punch_settle_spd — retraction speed (m/s) from peak to the M1-held position
 const _WEIGHT_PHYSICS = [
 	# LIGHT  — nimble, quick to respond, moderate spin persistence
-	{ "sway_mouse_scale": 0.010, "sway_damping": 0.30, "roll_damping": 0.08, "max_roll_speed": 15.0,
+	{ "sway_mouse_scale": 0.010, "sway_damping": 0.30, "sway_spring_k": 14.0, "sway_max_speed":  8.0,
+	  "roll_damping": 0.08, "max_roll_speed": 15.0,
 	  "punch_pull":  2.0, "punch_accel": 220.0, "punch_peak_hold": 0.06, "punch_settle_spd": 1.2 },
 	# MEDIUM — heavier feel, more resistance to input, spin coasts longer
-	{ "sway_mouse_scale": 0.006, "sway_damping": 0.40, "roll_damping": 0.05, "max_roll_speed":  8.0,
+	{ "sway_mouse_scale": 0.006, "sway_damping": 0.40, "sway_spring_k": 10.0, "sway_max_speed":  5.5,
+	  "roll_damping": 0.05, "max_roll_speed":  8.0,
 	  "punch_pull":  5.0, "punch_accel": 120.0, "punch_peak_hold": 0.12, "punch_settle_spd": 0.9 },
 	# HEAVY  — ponderous, hard to start moving, very persistent spin (flywheel)
-	{ "sway_mouse_scale": 0.003, "sway_damping": 0.60, "roll_damping": 0.02, "max_roll_speed":  4.0,
+	{ "sway_mouse_scale": 0.003, "sway_damping": 0.60, "sway_spring_k":  6.0, "sway_max_speed":  3.5,
+	  "roll_damping": 0.02, "max_roll_speed":  4.0,
 	  "punch_pull": 10.0, "punch_accel":  55.0, "punch_peak_hold": 0.20, "punch_settle_spd": 0.6 },
 ]
 
