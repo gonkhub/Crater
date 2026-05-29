@@ -444,7 +444,13 @@ func _carry_update(delta: float):
 		)
 		var fwd_cam:   Vector3 = Vector3(-sway_pos.x, -sway_pos.y, -2.0 * pivot).normalized()
 		var fwd_world: Vector3 = cam_basis * fwd_cam
-		var up_ref:    Vector3 = cam_basis.y
+		# up_ref rotates with _sway_angle so the object spins around its long
+		# axis as the close end sweeps the circle (axial / helicopter-blade spin).
+		# Derivation: crossguard must point tangent to the circle at angle θ,
+		# i.e. (-sin θ, cos θ) in camera XY. Working back through looking_at ×
+		# rotation_offset gives up_ref = cam_basis * (-cos θ, -sin θ, 0).
+		# At the default rest angle (θ = -π/2) this equals cam_basis.y — unchanged.
+		var up_ref: Vector3 = cam_basis * Vector3(-cos(_sway_angle), -sin(_sway_angle), 0.0)
 		if abs(fwd_world.dot(up_ref)) > 0.999:
 			up_ref = cam_basis.x
 		target_basis = Basis.looking_at(fwd_world, up_ref) * rotation_offset
