@@ -40,6 +40,7 @@ shape = SubResource("CapsuleShape3D_stick")
 [node name="Interactable" type="Node" parent="."]
 script = ExtResource("1_inter0")
 display_name = "Stick"
+description = "A slender wooden staff with a carved hand guard. Light and easy to wield."
 
 [node name="Holdable" type="Node" parent="."]
 script = ExtResource("2_hold0")

@@ -11,6 +11,7 @@ signal action_chosen(action: String, target: Node)
 
 var _action_target: Node = null
 var _local_player: Node = null
+var _info_popup: Control = null
 
 const _SETTINGS = [
 	{"group": "Movement"},
@@ -140,6 +141,9 @@ func _build_settings():
 
 func _unhandled_input(event):
 	if event.is_action_pressed("ui_cancel"):
+		if _info_popup != null:
+			hide_info_popup()
+			return
 		_toggle_pause()
 
 func _toggle_pause():
@@ -166,6 +170,7 @@ func hide_hover_label():
 	hover_label.visible = false
 
 func show_action_menu(screen_pos: Vector2, target: Node, display_name: String, actions: Array[String]):
+	hide_info_popup()
 	_action_target = target
 	action_name_label.text = display_name
 	for child in action_buttons.get_children():
@@ -193,3 +198,95 @@ func _on_action_pressed(action: String):
 func _notification(what):
 	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+# ── Info popup ──────────────────────────────────────────────────────────────
+
+func show_info_popup(interactable: Interactable, target: Node) -> void:
+	hide_info_popup()
+
+	var popup = PanelContainer.new()
+	popup.anchor_left   = 0.5
+	popup.anchor_right  = 0.5
+	popup.anchor_top    = 0.5
+	popup.anchor_bottom = 0.5
+	popup.offset_left   = -160.0
+	popup.offset_right  =  160.0
+	popup.offset_top    = -140.0
+	popup.offset_bottom =  140.0
+
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 8)
+	popup.add_child(vbox)
+
+	# ── Header: name (left) + weight tag (right, small italic) ──────────────
+	var header = HBoxContainer.new()
+	vbox.add_child(header)
+
+	var name_lbl = Label.new()
+	name_lbl.text = interactable.display_name
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_lbl.add_theme_font_size_override("font_size", 18)
+	header.add_child(name_lbl)
+
+	# Weight tag — only shown for objects that have a Holdable component
+	var holdable: Holdable = null
+	for child in target.get_children():
+		if child is Holdable:
+			holdable = child
+			break
+	if holdable:
+		var weight_names = ["light", "medium", "heavy"]
+		var weight_rtl = RichTextLabel.new()
+		weight_rtl.bbcode_enabled = true
+		weight_rtl.fit_content = true
+		weight_rtl.scroll_active = false
+		weight_rtl.custom_minimum_size = Vector2(56, 0)
+		weight_rtl.add_theme_font_size_override("normal_font_size", 11)
+		weight_rtl.add_theme_color_override("default_color", Color(0.60, 0.60, 0.60))
+		weight_rtl.text = "[right][i]" + weight_names[holdable.weight] + "[/i][/right]"
+		weight_rtl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		header.add_child(weight_rtl)
+
+	vbox.add_child(HSeparator.new())
+
+	# ── Description (scrollable) ─────────────────────────────────────────────
+	var scroll = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(scroll)
+
+	var desc = RichTextLabel.new()
+	desc.bbcode_enabled = true
+	desc.fit_content = true
+	desc.scroll_active = false
+	desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	desc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if interactable.description.is_empty():
+		desc.text = "[color=#888888][i]No description available.[/i][/color]"
+	else:
+		desc.text = interactable.description
+	scroll.add_child(desc)
+
+	vbox.add_child(HSeparator.new())
+
+	# ── Close button (right-aligned) ─────────────────────────────────────────
+	var btn_row = HBoxContainer.new()
+	vbox.add_child(btn_row)
+	var spacer = Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	btn_row.add_child(spacer)
+	var close_btn = Button.new()
+	close_btn.text = "Close"
+	close_btn.pressed.connect(hide_info_popup)
+	btn_row.add_child(close_btn)
+
+	add_child(popup)
+	_info_popup = popup
+
+func hide_info_popup() -> void:
+	if _info_popup:
+		_info_popup.queue_free()
+		_info_popup = null
+
+func is_info_popup_visible() -> bool:
+	return _info_popup != null

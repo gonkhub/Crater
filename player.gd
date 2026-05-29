@@ -137,6 +137,7 @@ func _unhandled_input(event):
 			if _hud:
 				_hud.hide_action_menu()
 				_hud.hide_hover_label()
+				_hud.hide_info_popup()
 			if tab_mode:
 				Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 			elif not (_hud and _hud.pause_overlay.visible):
@@ -158,6 +159,8 @@ func _unhandled_input(event):
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			if _hud and _hud.is_action_menu_visible():
 				_hud.hide_action_menu()
+			elif _hud and _hud.is_info_popup_visible():
+				_hud.hide_info_popup()
 			elif held_object:
 				_release_object()
 			else:
@@ -267,6 +270,10 @@ func _on_action_chosen(action: String, target: Node):
 				tab_mode = false
 				if not (_hud and _hud.pause_overlay.visible):
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+		"Info":
+			var interactable = _find_interactable(target)
+			if interactable and _hud:
+				_hud.show_info_popup(interactable, target)
 		_:
 			var interactable = _find_interactable(target)
 			if interactable:

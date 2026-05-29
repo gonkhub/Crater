@@ -45,6 +45,7 @@ shape = SubResource("CapsuleShape3D_mush")
 [node name="Interactable" type="Node" parent="."]
 script = ExtResource("2_inter0")
 display_name = "Mushroom"
+description = "A wandering red-capped mushroom. It seeks higher ground with quiet determination."
 
 [node name="Holdable" type="Node" parent="."]
 script = ExtResource("3_hold0")

@@ -60,6 +60,7 @@ shape = SubResource("BoxShape3D_adio")
 [node name="Interactable" type="Node" parent="."]
 script = ExtResource("2_inter0")
 display_name = "Adio"
+description = "A weathered object of uncertain origin. Its purpose remains a mystery."
 
 [node name="Holdable" type="Node" parent="."]
 script = ExtResource("3_hold0")
