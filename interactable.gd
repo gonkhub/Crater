@@ -28,6 +28,8 @@ signal action_performed(action: String, by_player: Node)
 var is_held: bool = false
 
 func _ready():
-	# "Info" is available on every interactable — always appended last.
+	# "Tune" and "Info" are available on every interactable — Tune first, Info last.
+	if "Tune" not in actions:
+		actions.append("Tune")
 	if "Info" not in actions:
 		actions.append("Info")

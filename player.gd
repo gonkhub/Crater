@@ -169,6 +169,8 @@ func _unhandled_input(event):
 				_hud.hide_action_menu()
 			elif _hud and _hud.is_info_popup_visible():
 				_hud.hide_info_popup()
+			elif _hud and _hud.is_tune_popup_visible():
+				_hud.hide_tune_popup()
 			elif held_object:
 				_release_object()
 			else:
@@ -286,6 +288,10 @@ func _on_action_chosen(action: String, target: Node):
 			var interactable = _find_interactable(target)
 			if interactable and _hud:
 				_hud.show_info_popup(interactable, target)
+		"Tune":
+			var holdable = _find_holdable(target)
+			if holdable and _hud:
+				_hud.show_tune_popup(target)
 		_:
 			var interactable = _find_interactable(target)
 			if interactable:
@@ -355,7 +361,12 @@ func _try_held_action(input: String):
 func _do_punch():
 	if punch_cooldown > 0.0:
 		return
-	punch_cooldown = PUNCH_COOLDOWN
+	# Resolve per-object overrides: holdable > player default
+	var eff_cooldown:    float = held_holdable.punch_cooldown if held_holdable and held_holdable.punch_cooldown > 0.0 else PUNCH_COOLDOWN
+	var eff_punch_dist:  float = held_holdable.punch_distance if held_holdable and held_holdable.punch_distance > 0.0 else PUNCH_DISTANCE
+	var eff_carry_dist:  float = held_holdable.carry_distance if held_holdable and held_holdable.carry_distance > 0.0 else CARRY_DISTANCE
+	var eff_impulse:     float = held_holdable.punch_impulse  if held_holdable and held_holdable.punch_impulse  > 0.0 else PUNCH_IMPULSE
+	punch_cooldown = eff_cooldown
 	punch_held = true
 	punch_velocity = 0.0
 	punch_start_angle = _sway_angle
@@ -365,20 +376,21 @@ func _do_punch():
 	print("[punch] player %d punched '%s'" % [multiplayer.get_unique_id(), punch_target_name])
 	var punch_dir = -camera.global_transform.basis.z
 	var from = camera.global_position
-	var to = from + punch_dir * (CARRY_DISTANCE + PUNCH_DISTANCE)
+	var to = from + punch_dir * (eff_carry_dist + eff_punch_dist)
 	var params = PhysicsRayQueryParameters3D.create(from, to)
 	params.exclude = [get_rid(), held_object.get_rid()]
 	var hit = get_world_3d().direct_space_state.intersect_ray(params)
 	if hit and hit.collider is RigidBody3D:
-		hit.collider.apply_central_impulse(punch_dir * PUNCH_IMPULSE)
+		hit.collider.apply_central_impulse(punch_dir * eff_impulse)
 
 func _do_throw():
 	if not held_object:
 		return
 	print("[throw] player %d threw '%s'" % [multiplayer.get_unique_id(), held_object.name])
+	var eff_throw_speed: float = held_holdable.throw_speed if held_holdable and held_holdable.throw_speed > 0.0 else THROW_SPEED
 	if held_object is RigidBody3D:
 		var throw_dir = -camera.global_transform.basis.z
-		var throw_vel = velocity + throw_dir * THROW_SPEED
+		var throw_vel = velocity + throw_dir * eff_throw_speed
 		held_object.continuous_cd = true   # prevent tunnelling through thin geometry
 		held_object.freeze = false
 		held_object.linear_velocity = throw_vel
@@ -400,7 +412,12 @@ func _carry_update(delta: float):
 			held_interactable.is_held = false
 		_reset_held_state()
 		return
-	if held_object.global_position.distance_to(camera.global_position) > MAX_CARRY_DIST:
+	# ── Effective per-object values (holdable overrides > player defaults) ───────
+	var eff_max_carry:  float = held_holdable.max_carry_dist  if held_holdable and held_holdable.max_carry_dist  > 0.0 else MAX_CARRY_DIST
+	var eff_carry_dist: float = held_holdable.carry_distance  if held_holdable and held_holdable.carry_distance  > 0.0 else CARRY_DISTANCE
+	var eff_punch_dist: float = held_holdable.punch_distance  if held_holdable and held_holdable.punch_distance  > 0.0 else PUNCH_DISTANCE
+
+	if held_object.global_position.distance_to(camera.global_position) > eff_max_carry:
 		_release_object()
 		return
 
@@ -417,6 +434,7 @@ func _carry_update(delta: float):
 	var w_peak_hold:   float = dyn.get("punch_peak_hold", 0.10)
 	var w_settle_spd:  float = dyn.get("punch_settle_spd", PUNCH_RETURN_SPEED * 0.4)
 	var w_sway_sens:   float = dyn.get("sway_sensitivity", 30.0)
+	var w_pushback:    float = dyn.get("punch_pushback",   PUNCH_PUSHBACK)
 
 	# ── Punch offset ─────────────────────────────────────────────────────────
 	# Four phases while M1 is held:
@@ -428,11 +446,11 @@ func _carry_update(delta: float):
 	if punch_held:
 		if not punch_peaked:
 			# Phase 1: weight-scaled extend
-			if punch_offset < PUNCH_DISTANCE:
+			if punch_offset < eff_punch_dist:
 				punch_velocity += w_punch_accel * delta
-				punch_offset = minf(punch_offset + punch_velocity * delta, PUNCH_DISTANCE)
+				punch_offset = minf(punch_offset + punch_velocity * delta, eff_punch_dist)
 			# Transition to Phase 2 on first frame at max
-			if punch_offset >= PUNCH_DISTANCE:
+			if punch_offset >= eff_punch_dist:
 				punch_peaked = true
 				punch_hold_timer = w_peak_hold
 				if w_pull > 0.0:
@@ -441,15 +459,21 @@ func _carry_update(delta: float):
 			# Phase 2: dwell at max extension
 			punch_hold_timer -= delta
 			punch_velocity = 0.0
-			punch_offset = PUNCH_DISTANCE
+			punch_offset = eff_punch_dist
 		else:
 			# Phase 3: slow retraction to the M1-held settle position
 			punch_velocity = 0.0
-			punch_offset = move_toward(punch_offset, PUNCH_DISTANCE * PUNCH_SETTLE_FRAC, w_settle_spd * delta)
+			punch_offset = move_toward(punch_offset, eff_punch_dist * PUNCH_SETTLE_FRAC, w_settle_spd * delta)
 	else:
 		# Phase 4: M1 released — retract offset; activate opposite-side sway spring
 		if punch_peaked:
 			punch_returning = true
+			# Pre-aim the normal sway spring at the destination so it holds the object
+			# there once punch_returning finishes, instead of snapping back to the old target.
+			var return_target: float = fposmod(punch_start_angle + PI, TAU)
+			_sway_target    = return_target
+			_sway_direction = return_target
+			_sway_amplitude = 1.0
 		punch_peaked = false
 		punch_hold_timer = 0.0
 		punch_velocity = 0.0
@@ -524,7 +548,7 @@ func _carry_update(delta: float):
 	# punch extends, then drifts back out as it retracts — no snap.
 	var sway_pos: Vector2 = Vector2.ZERO
 	if pivot > 0.001:
-		var punch_t: float = punch_offset / PUNCH_DISTANCE
+		var punch_t: float = punch_offset / maxf(eff_punch_dist, 0.001)
 		sway_pos = Vector2(cos(_sway_angle), sin(_sway_angle)) * pivot * (1.0 - punch_t)
 
 	# ── Object transform + endpoint collision protection ─────────────────────
@@ -540,7 +564,7 @@ func _carry_update(delta: float):
 
 	var cam_basis: Basis   = camera.global_transform.basis
 	var cam_pos:   Vector3 = camera.global_position
-	var depth: float       = CARRY_DISTANCE + punch_offset
+	var depth: float       = eff_carry_dist + punch_offset
 
 	var target_pos:   Vector3
 	var target_basis: Basis
@@ -612,9 +636,11 @@ func _carry_update(delta: float):
 	_test_params.motion = motion
 	if PhysicsServer3D.body_test_motion(held_object.get_rid(), _test_params, _test_result):
 		target_pos = held_object.global_position + _test_result.get_travel()
-		if punch_held and punch_velocity > 0.0:
+		# Pushback: weight-scaled force pushed back onto the player whenever M1
+		# is held and the object is blocked by geometry.
+		if punch_held:
 			var punch_dir: Vector3 = -camera.global_transform.basis.z
-			velocity -= punch_dir * punch_velocity * PUNCH_PUSHBACK * delta
+			velocity -= punch_dir * w_pushback * delta
 
 	if punch_measuring:
 		var frame_speed: float = held_object.global_position.distance_to(target_pos) / delta

@@ -12,6 +12,8 @@ signal action_chosen(action: String, target: Node)
 var _action_target: Node = null
 var _local_player: Node = null
 var _info_popup: Control = null
+var _tune_popup: Control = null
+var _tune_holdable: Holdable = null
 
 const _SETTINGS = [
 	{"group": "Movement"},
@@ -20,18 +22,23 @@ const _SETTINGS = [
 	{"prop": "MOUSE_SENSITIVITY","label": "Sensitivity",    "min": 0.0005, "max": 0.01,  "step": 0.0005},
 	{"prop": "GRAVITY_SCALE",    "label": "Gravity",        "min": 0.5,    "max": 5.0,   "step": 0.1},
 	{"prop": "SLIDE_FRICTION",   "label": "Slide Friction", "min": 0.0,    "max": 20.0,  "step": 0.5},
-	{"group": "Interaction"},
-	{"prop": "INTERACT_RANGE",   "label": "Interact Range", "min": 1.0,    "max": 15.0,  "step": 0.5},
-	{"prop": "CARRY_DISTANCE",   "label": "Carry Distance", "min": 0.5,    "max": 5.0,   "step": 0.1},
-	{"prop": "MAX_CARRY_DIST",   "label": "Max Carry Dist", "min": 2.0,    "max": 20.0,  "step": 0.5},
-	{"prop": "THROW_SPEED",      "label": "Throw Speed",    "min": 1.0,    "max": 50.0,  "step": 1.0},
-	{"group": "Punch"},
-	{"prop": "PUNCH_DISTANCE",   "label": "Distance",       "min": 0.5,    "max": 8.0,   "step": 0.1},
-	{"prop": "PUNCH_ACCEL",      "label": "Acceleration",   "min": 10.0,   "max": 500.0, "step": 10.0},
-	{"prop": "PUNCH_RETURN_SPEED","label": "Return Speed",  "min": 0.5,    "max": 20.0,  "step": 0.5},
-	{"prop": "PUNCH_IMPULSE",    "label": "Impulse",        "min": 1.0,    "max": 50.0,  "step": 1.0},
-	{"prop": "PUNCH_COOLDOWN",   "label": "Cooldown (s)",   "min": 0.05,   "max": 2.0,   "step": 0.05},
-	{"prop": "PUNCH_PUSHBACK",   "label": "Pushback",       "min": 0.0,    "max": 2.0,   "step": 0.05},
+]
+
+# Physics params exposed per weight class in the pause-menu settings panel.
+# Each entry maps to a key in Holdable._WEIGHT_PHYSICS[i].
+const _WEIGHT_PARAMS = [
+	{"key": "sway_mouse_scale",  "label": "Mouse Scale",      "min": 0.0,   "max": 0.05,  "step": 0.001},
+	{"key": "sway_damping",      "label": "Sway Damping",     "min": 0.0,   "max": 2.0,   "step": 0.05},
+	{"key": "sway_spring_k",     "label": "Sway Spring",      "min": 0.0,   "max": 30.0,  "step": 0.5},
+	{"key": "sway_max_speed",    "label": "Sway Max Speed",   "min": 0.0,   "max": 20.0,  "step": 0.5},
+	{"key": "sway_sensitivity",  "label": "Sway Sensitivity", "min": 1.0,   "max": 100.0, "step": 1.0},
+	{"key": "roll_damping",      "label": "Roll Damping",     "min": 0.0,   "max": 0.5,   "step": 0.005},
+	{"key": "max_roll_speed",    "label": "Max Roll Speed",   "min": 0.0,   "max": 30.0,  "step": 0.5},
+	{"key": "punch_pull",        "label": "Punch Pull",       "min": 0.0,   "max": 20.0,  "step": 0.5},
+	{"key": "punch_accel",       "label": "Punch Accel",      "min": 0.0,   "max": 500.0, "step": 5.0},
+	{"key": "punch_peak_hold",   "label": "Peak Hold (s)",    "min": 0.0,   "max": 1.0,   "step": 0.01},
+	{"key": "punch_settle_spd",  "label": "Settle Speed",     "min": 0.0,   "max": 5.0,   "step": 0.1},
+	{"key": "punch_pushback",    "label": "Punch Pushback",   "min": 0.0,   "max": 60.0,  "step": 1.0},
 ]
 
 func _ready():
@@ -132,6 +139,8 @@ func _build_settings():
 
 		slider.value_changed.connect(_on_setting_changed.bind(entry["prop"], val_lbl))
 
+	_build_weight_settings(settings_vbox)
+
 	outer_vbox.add_child(HSeparator.new())
 
 	var quit_btn = Button.new()
@@ -139,8 +148,49 @@ func _build_settings():
 	quit_btn.pressed.connect(_quit_to_menu)
 	outer_vbox.add_child(quit_btn)
 
+func _build_weight_settings(vbox: VBoxContainer) -> void:
+	var weight_names = ["Light", "Medium", "Heavy"]
+	for i in range(3):
+		var group_lbl = Label.new()
+		group_lbl.text = "— Weight Class: %s —" % weight_names[i]
+		group_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		vbox.add_child(group_lbl)
+
+		for param in _WEIGHT_PARAMS:
+			var row = HBoxContainer.new()
+			vbox.add_child(row)
+
+			var name_lbl = Label.new()
+			name_lbl.text = param["label"]
+			name_lbl.custom_minimum_size = Vector2(150, 0)
+			name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(name_lbl)
+
+			var slider = HSlider.new()
+			slider.min_value = param["min"]
+			slider.max_value = param["max"]
+			slider.step      = param["step"]
+			slider.value     = Holdable._WEIGHT_PHYSICS[i].get(param["key"], 0.0)
+			slider.custom_minimum_size = Vector2(180, 0)
+			row.add_child(slider)
+
+			var val_lbl = Label.new()
+			val_lbl.text = str(slider.value)
+			val_lbl.custom_minimum_size = Vector2(60, 0)
+			val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+			row.add_child(val_lbl)
+
+			slider.value_changed.connect(_on_weight_setting_changed.bind(i, param["key"], val_lbl))
+
+func _on_weight_setting_changed(value: float, weight_idx: int, key: String, val_lbl: Label) -> void:
+	Holdable.save_weight_physics(weight_idx, key, value)
+	val_lbl.text = str(value)
+
 func _unhandled_input(event):
 	if event.is_action_pressed("ui_cancel"):
+		if _tune_popup != null:
+			hide_tune_popup()
+			return
 		if _info_popup != null:
 			hide_info_popup()
 			return
@@ -171,6 +221,7 @@ func hide_hover_label():
 
 func show_action_menu(screen_pos: Vector2, target: Node, display_name: String, actions: Array[String]):
 	hide_info_popup()
+	hide_tune_popup()
 	_action_target = target
 	action_name_label.text = display_name
 	for child in action_buttons.get_children():
@@ -289,3 +340,128 @@ func hide_info_popup() -> void:
 
 func is_info_popup_visible() -> bool:
 	return _info_popup != null
+
+# ── Tune popup ───────────────────────────────────────────────────────────────
+
+func show_tune_popup(target: Node) -> void:
+	hide_tune_popup()
+
+	var holdable: Holdable = null
+	var interactable: Interactable = null
+	for child in target.get_children():
+		if child is Holdable:    holdable = child
+		elif child is Interactable: interactable = child
+	if not holdable:
+		return
+	_tune_holdable = holdable
+
+	var popup = PanelContainer.new()
+	popup.anchor_left   = 0.5
+	popup.anchor_right  = 0.5
+	popup.anchor_top    = 0.5
+	popup.anchor_bottom = 0.5
+	popup.offset_left   = -200.0
+	popup.offset_right  =  200.0
+	popup.offset_top    = -200.0
+	popup.offset_bottom =  200.0
+
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	popup.add_child(vbox)
+
+	# ── Header ────────────────────────────────────────────────────────────────
+	var header = HBoxContainer.new()
+	vbox.add_child(header)
+
+	var name_lbl = Label.new()
+	name_lbl.text = interactable.display_name if interactable else target.name
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_lbl.add_theme_font_size_override("font_size", 18)
+	header.add_child(name_lbl)
+
+	var tag_lbl = Label.new()
+	tag_lbl.text = "tune"
+	tag_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	tag_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	tag_lbl.size_flags_horizontal = Control.SIZE_SHRINK_END
+	tag_lbl.add_theme_font_size_override("font_size", 11)
+	tag_lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.60))
+	tag_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	header.add_child(tag_lbl)
+
+	vbox.add_child(HSeparator.new())
+
+	# ── Field rows (scrollable) ───────────────────────────────────────────────
+	var scroll = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(scroll)
+
+	var content_vbox = VBoxContainer.new()
+	content_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content_vbox.add_theme_constant_override("separation", 6)
+	scroll.add_child(content_vbox)
+
+	for entry in holdable.tune_schema():
+		var row = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		content_vbox.add_child(row)
+
+		var lbl = Label.new()
+		lbl.text = entry["label"]
+		lbl.custom_minimum_size = Vector2(140, 0)
+		lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(lbl)
+
+		match entry.get("type", ""):
+			"dropdown":
+				var opt = OptionButton.new()
+				for option in entry["options"]:
+					opt.add_item(option)
+				opt.selected = int(holdable.get(entry["prop"]))
+				opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				row.add_child(opt)
+				opt.item_selected.connect(_on_tune_dropdown_changed.bind(entry["prop"], holdable))
+			"number":
+				var spin = SpinBox.new()
+				spin.min_value     = entry["min"]
+				spin.max_value     = entry["max"]
+				spin.step          = entry["step"]
+				spin.value         = holdable.get(entry["prop"])
+				spin.allow_greater = true
+				spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				row.add_child(spin)
+				spin.value_changed.connect(_on_tune_number_changed.bind(entry["prop"], holdable))
+
+	vbox.add_child(HSeparator.new())
+
+	# ── Close button ──────────────────────────────────────────────────────────
+	var btn_row = HBoxContainer.new()
+	vbox.add_child(btn_row)
+	var spacer = Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	btn_row.add_child(spacer)
+	var close_btn = Button.new()
+	close_btn.text = "Close"
+	close_btn.pressed.connect(hide_tune_popup)
+	btn_row.add_child(close_btn)
+
+	add_child(popup)
+	_tune_popup = popup
+
+func hide_tune_popup() -> void:
+	if _tune_popup:
+		_tune_popup.queue_free()
+		_tune_popup = null
+	_tune_holdable = null
+
+func is_tune_popup_visible() -> bool:
+	return _tune_popup != null
+
+func _on_tune_number_changed(value: float, prop: String, holdable: Holdable) -> void:
+	if is_instance_valid(holdable):
+		holdable.save_tune_value(prop, value)
+
+func _on_tune_dropdown_changed(index: int, prop: String, holdable: Holdable) -> void:
+	if is_instance_valid(holdable):
+		holdable.save_tune_value(prop, index)
