@@ -385,26 +385,32 @@ func _carry_update(delta: float):
 	# _sway_angle / _sway_ang_vel — position of the close end on the anchor circle
 	# _roll_angle  / _roll_ang_vel — axial spin around the object's long axis
 	#
-	# Both receive the same mouse impulse (tangential projection), but roll has
-	# ~4× lower damping so it coasts freely long after the position settles.
-	# Because they diverge over time there is no tidal locking.
+	# Both receive the same mouse impulse (tangential projection), but different
+	# damping rates cause them to diverge — no tidal locking.
+	# All rate constants come from the Holdable weight bucket.
 	var pivot: float = held_holdable.hold_pivot if held_holdable else 0.0
+	var dyn: Dictionary    = held_holdable.get_dynamics() if held_holdable else {}
+	var w_mouse:  float    = dyn.get("sway_mouse_scale", SWAY_MOUSE_SCALE)
+	var w_sway:   float    = dyn.get("sway_damping",     SWAY_DAMPING)
+	var w_roll:   float    = dyn.get("roll_damping",      ROLL_DAMPING)
+	var w_maxspin: float   = dyn.get("max_roll_speed",    15.0)
 
 	var tangent: Vector2 = Vector2(-sin(_sway_angle), cos(_sway_angle))
-	var impulse: float = -_mouse_delta.dot(tangent) * SWAY_MOUSE_SCALE / maxf(pivot, 0.25)
+	var impulse: float = -_mouse_delta.dot(tangent) * w_mouse / maxf(pivot, 0.25)
 	_sway_ang_vel += impulse
-	_roll_ang_vel += impulse   # same kick; diverges from sway because ROLL_DAMPING << SWAY_DAMPING
+	_roll_ang_vel += impulse   # same kick; diverges over time due to different damping
 	_mouse_delta = Vector2.ZERO
 
 	if punch_held:
 		# Position settles quickly when straightening
-		_sway_ang_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * 8.0 * delta)
+		_sway_ang_vel *= maxf(0.0, 1.0 - w_sway * 8.0 * delta)
 	else:
-		_sway_ang_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * delta)
+		_sway_ang_vel *= maxf(0.0, 1.0 - w_sway * delta)
 		_sway_angle   += _sway_ang_vel * delta
 
 	# Roll always updates — keeps spinning through punches (spinning stab effect)
-	_roll_ang_vel *= maxf(0.0, 1.0 - ROLL_DAMPING * delta)
+	_roll_ang_vel *= maxf(0.0, 1.0 - w_roll * delta)
+	_roll_ang_vel  = clampf(_roll_ang_vel, -w_maxspin, w_maxspin)
 	_roll_angle   += _roll_ang_vel * delta
 
 	# Cartesian position of the close end.

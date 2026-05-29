@@ -48,3 +48,4 @@ display_name = "Mushroom"
 
 [node name="Holdable" type="Node" parent="."]
 script = ExtResource("3_hold0")
+weight = 1
