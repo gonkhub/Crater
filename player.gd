@@ -16,8 +16,8 @@ var MAX_CARRY_DIST = 7.0
 var PUNCH_COOLDOWN = 0.5
 var PUNCH_PUSHBACK = 0.4
 var SWAY_SPRING = 80.0        # spring constant pulling close end onto the circle (units/s²/unit)
-var SWAY_DAMPING = 5.0        # exponential damping rate (per second)
-var SWAY_MOUSE_SCALE = 0.004  # pixels → sway velocity (units/s)
+var SWAY_DAMPING = 0.3        # exponential damping rate (per second) — low = very slippery
+var SWAY_MOUSE_SCALE = 0.008  # pixels → sway velocity (units/s)
 var SWAY_TILT_SCALE = 0.5     # sway_pos units → tilt radians (no-pivot objects only)
 var SWAY_DEAD_RADIUS = 0.15   # inner dead-zone radius; centre repels the close end outward
 var SWAY_PUNCH_SPRING = 500.0 # spring constant snapping sway to centre during a punch
@@ -440,7 +440,10 @@ func _carry_update(delta: float):
 		ray.to   = anchor
 		var tip_hit: Dictionary = space.intersect_ray(ray)
 		if tip_hit:
-			depth  = maxf(cam_pos.distance_to(tip_hit.position) - ENDPOINT_MARGIN, 0.1)
+			# Minimum depth = 2*pivot + margin so the butt end never crosses
+			# behind the camera plane and into the player's collision capsule.
+			var min_depth: float = 2.0 * pivot + ENDPOINT_MARGIN
+			depth  = maxf(cam_pos.distance_to(tip_hit.position) - ENDPOINT_MARGIN, min_depth)
 			anchor = cam_pos + cam_basis * Vector3(0.0, 0.0, -depth)
 
 		# ── Pivot-path transform (computed with post-ray depth) ───────────────
