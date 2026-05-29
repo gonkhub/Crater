@@ -3,19 +3,13 @@ extends Node
 
 enum Weight { LIGHT, MEDIUM, HEAVY }
 
-@export var hold_rotation: Vector3 = Vector3.ZERO
-@export var hold_pivot: float = 0.15  # world-space distance from object centre to the far (screen-centre) end
-                                      # 0 = static hold (no sway). Default 0.15 gives subtle sway for compact objects.
-@export var weight: Weight = Weight.LIGHT
-@export var m1_action: String = "punch"
-@export var m2_action: String = ""
-@export var scroll_up_action: String = "throw"
-
-# Per-weight hold dynamics. Index matches the Weight enum value.
-#   sway_mouse_scale — mouse input sensitivity for both position and spin impulse
-#   sway_damping     — how quickly angular position decays (higher = snappier stop)
-#   roll_damping     — how quickly axial spin decays (lower = spins much longer)
-#   max_roll_speed   — hard cap on axial spin rate (rad/s)
+# Per-weight hold dynamics. Array index matches the Weight enum value.
+# To tune feel system-wide, edit these rows.
+# To tune a single object, use the Physics Overrides exports below.
+#   sway_mouse_scale — how strongly mouse input drives position/spin impulse
+#   sway_damping     — how quickly angular position decays  (higher = snappier)
+#   roll_damping     — how quickly axial spin decays        (lower = coasts longer)
+#   max_roll_speed   — hard cap on axial spin (rad/s)
 const _WEIGHT_PHYSICS = [
 	# LIGHT  — nimble, quick to respond, moderate spin persistence
 	{ "sway_mouse_scale": 0.010, "sway_damping": 0.30, "roll_damping": 0.08, "max_roll_speed": 15.0 },
@@ -25,8 +19,68 @@ const _WEIGHT_PHYSICS = [
 	{ "sway_mouse_scale": 0.003, "sway_damping": 0.60, "roll_damping": 0.02, "max_roll_speed":  4.0 },
 ]
 
+# ── Hold ────────────────────────────────────────────────────────────────────
+@export_group("Hold")
+
+## Local Euler rotation applied on top of the carry system's facing direction.
+## Use this to align the object's mesh with the pivot axis.
+## Example: Vector3(-90, 0, 0) rotates a Y-axis capsule to point toward the
+## anchor (screen-centre end). Leave at zero for symmetric / round objects.
+@export var hold_rotation: Vector3 = Vector3.ZERO
+
+## Half-length of the object along the hold axis (metres).
+## Defines the radius of the sway circle and how far the tip sits from centre.
+## 0 = static carry with no sway.
+## Typical values: 0.15 for compact objects, 0.5–0.7 for long weapons.
+@export_range(0.0, 1.5, 0.05) var hold_pivot: float = 0.15
+
+## Weight class — sets the baseline physics from the _WEIGHT_PHYSICS table.
+## Override individual values below without changing the bucket.
+@export var weight: Weight = Weight.LIGHT
+
+# ── Actions ─────────────────────────────────────────────────────────────────
+@export_group("Actions")
+
+## Action fired by the primary (left) mouse button while holding.
+## Built-in: "punch", "throw". Leave empty to disable.
+@export var m1_action: String = "punch"
+
+## Action fired by the secondary (right) mouse button while holding.
+## Leave empty to disable.
+@export var m2_action: String = ""
+
+## Action fired by scroll-up while holding.
+@export var scroll_up_action: String = "throw"
+
+# ── Physics Overrides ────────────────────────────────────────────────────────
+@export_group("Physics Overrides")
+## Per-object overrides for the weight-bucket physics values.
+## Leave at 0 to inherit from the weight bucket. Any non-zero value replaces
+## that specific parameter for this object only.
+
+## Mouse input sensitivity. Overrides sway_mouse_scale from the weight bucket.
+@export_range(0.0, 0.03, 0.001) var override_mouse_scale: float = 0.0
+
+## Position angular damping per second. Overrides sway_damping.
+@export_range(0.0, 2.0, 0.05) var override_sway_damping: float = 0.0
+
+## Axial spin decay per second. Overrides roll_damping.
+@export_range(0.0, 0.5, 0.005) var override_roll_damping: float = 0.0
+
+## Hard cap on axial spin speed (rad/s). Overrides max_roll_speed.
+@export_range(0.0, 30.0, 0.5) var override_max_roll_speed: float = 0.0
+
+# ────────────────────────────────────────────────────────────────────────────
+
+## Returns the effective physics dictionary for this object: the weight bucket
+## with any non-zero per-object overrides applied on top.
 func get_dynamics() -> Dictionary:
-	return _WEIGHT_PHYSICS[weight]
+	var d: Dictionary = _WEIGHT_PHYSICS[weight].duplicate()
+	if override_mouse_scale    > 0.0: d["sway_mouse_scale"] = override_mouse_scale
+	if override_sway_damping   > 0.0: d["sway_damping"]     = override_sway_damping
+	if override_roll_damping   > 0.0: d["roll_damping"]      = override_roll_damping
+	if override_max_roll_speed > 0.0: d["max_roll_speed"]   = override_max_roll_speed
+	return d
 
 func _ready():
 	# Auto-register "Take" so designers don't have to list it manually.
