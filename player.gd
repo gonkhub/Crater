@@ -379,7 +379,7 @@ func _carry_update(delta: float):
 	# circle of radius = hold_pivot, pushed back onto it by an elastic spring.
 	# When hold_pivot == 0 the same spring collapses to a centre-restore, and
 	# the sway is expressed purely as a tilt rotation around the carry position.
-	var pivot := held_holdable.hold_pivot if held_holdable else 0.0
+	var pivot: float = held_holdable.hold_pivot if held_holdable else 0.0
 
 	# Consume accumulated mouse delta — drives the close end laterally
 	_sway_vel += _mouse_delta * SWAY_MOUSE_SCALE
@@ -406,9 +406,9 @@ func _carry_update(delta: float):
 	# ── Object transform ──────────────────────────────────────────────────────
 	var rotation_offset: Basis = Basis.from_euler(held_holdable.hold_rotation * (PI / 180.0)) if held_holdable else Basis.IDENTITY
 
-	var cam_basis := camera.global_transform.basis
-	var cam_pos   := camera.global_position
-	var depth     := CARRY_DISTANCE + punch_offset  # positive scalar
+	var cam_basis: Basis   = camera.global_transform.basis
+	var cam_pos:   Vector3 = camera.global_position
+	var depth: float = CARRY_DISTANCE + punch_offset  # positive scalar
 
 	var target_pos: Vector3
 	var target_basis: Basis
