@@ -291,6 +291,7 @@ func _release_object():
 	if not held_object:
 		return
 	if held_object is RigidBody3D:
+		held_object.continuous_cd = true   # prevent tunnelling through thin geometry
 		held_object.freeze = false
 		held_object.linear_velocity = velocity
 		if _is_mp_connected():
@@ -347,6 +348,7 @@ func _do_throw():
 	if held_object is RigidBody3D:
 		var throw_dir = -camera.global_transform.basis.z
 		var throw_vel = velocity + throw_dir * THROW_SPEED
+		held_object.continuous_cd = true   # prevent tunnelling through thin geometry
 		held_object.freeze = false
 		held_object.linear_velocity = throw_vel
 		if _is_mp_connected():
