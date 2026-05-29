@@ -15,18 +15,14 @@ var THROW_SPEED = 15.0
 var MAX_CARRY_DIST = 7.0
 var PUNCH_COOLDOWN = 0.5
 var PUNCH_PUSHBACK = 0.4
-var SWAY_SPRING = 80.0        # spring constant pulling close end onto the circle (units/s²/unit)
-var SWAY_DAMPING = 0.3        # exponential damping rate (per second) — low = very slippery
-var SWAY_MOUSE_SCALE = 0.008  # pixels → sway velocity (units/s)
-var SWAY_TILT_SCALE = 0.5     # sway_pos units → tilt radians (no-pivot objects only)
-var SWAY_DEAD_RADIUS = 0.15   # inner dead-zone radius; centre repels the close end outward
-var SWAY_PUNCH_SPRING = 500.0 # spring constant snapping sway to centre during a punch
+var SWAY_DAMPING = 0.3        # angular damping rate (per second) — low = very slippery
+var SWAY_MOUSE_SCALE = 0.008  # pixels → angular velocity (rad/s, scaled by 1/pivot)
 var ENDPOINT_MARGIN = 0.06    # minimum clearance between object endpoints and surfaces
 
 var sliding := false
 var tab_mode := false
-var _sway_pos: Vector2 = Vector2.ZERO   # camera-local XY displacement of the close end (world units)
-var _sway_vel: Vector2 = Vector2.ZERO   # derivative of _sway_pos (units/s)
+var _sway_angle: float = -PI / 2.0  # angle of close end on the circle (−½π = bottom = natural rest)
+var _sway_ang_vel: float = 0.0      # angular velocity (rad/s, + = counterclockwise)
 var _mouse_delta: Vector2 = Vector2.ZERO # accumulated mouse movement since last carry update
 var held_object: PhysicsBody3D = null
 var held_interactable: Interactable = null
@@ -280,8 +276,8 @@ func _reset_held_state():
 	punch_held = false
 	punch_cooldown = 0.0
 	punch_measuring = false
-	_sway_pos = Vector2.ZERO
-	_sway_vel = Vector2.ZERO
+	_sway_angle = -PI / 2.0
+	_sway_ang_vel = 0.0
 	_mouse_delta = Vector2.ZERO
 
 func _release_object():
@@ -376,46 +372,38 @@ func _carry_update(delta: float):
 		punch_velocity = 0.0
 		punch_offset = move_toward(punch_offset, 0.0, PUNCH_RETURN_SPEED * delta)
 
-	# ── Sway physics ──────────────────────────────────────────────────────────
-	# The far (screen-centre) end is anchored at the camera forward point.
-	# The close (player-side) end floats on a circle of radius = hold_pivot,
-	# pushed back onto it by an elastic spring and repelled from the centre
-	# by a dead-zone spring so it never passes through zero.
-	# During a punch the sway is overridden: a strong spring collapses it to
-	# centre so the object straightens into alignment with the player's view.
+	# ── Sway physics (polar / angular) ───────────────────────────────────────
+	# The close end rotates around the anchor circle in a single angular degree
+	# of freedom. Mouse movement is projected onto the circle's tangent so only
+	# rotational impulse is added — no radial spring, no bouncing.
 	var pivot: float = held_holdable.hold_pivot if held_holdable else 0.0
 
-	# Mouse input (negated: looking left/down pushes close end right/up)
-	_sway_vel -= _mouse_delta * SWAY_MOUSE_SCALE
+	# Tangent direction at the current angle (counterclockwise = + angle)
+	var tangent: Vector2 = Vector2(-sin(_sway_angle), cos(_sway_angle))
+	# Project mouse onto tangent; negate so looking-left spins the close end
+	# rightward (positive angle = counterclockwise = toward the right from bottom)
+	_sway_ang_vel -= _mouse_delta.dot(tangent) * SWAY_MOUSE_SCALE / maxf(pivot, 0.25)
 	_mouse_delta = Vector2.ZERO
 
-	var dist: float = _sway_pos.length()
-	var sway_dir: Vector2 = _sway_pos / dist if dist > 0.0001 else Vector2(0.0, -1.0)
-
 	if punch_held:
-		# Straighten: strong spring toward centre + heavy damping
-		_sway_vel -= _sway_pos * SWAY_PUNCH_SPRING * delta
-		_sway_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * 4.0 * delta)
-	elif pivot > 0.001:
-		# Circle spring: elastic force toward the circle of radius = pivot
-		_sway_vel += (pivot - dist) * sway_dir * SWAY_SPRING * delta
-		# Dead-zone: extra outward push when inside SWAY_DEAD_RADIUS
-		if dist < SWAY_DEAD_RADIUS:
-			_sway_vel += (SWAY_DEAD_RADIUS - dist) * sway_dir * SWAY_SPRING * 3.0 * delta
-		_sway_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * delta)
+		# Heavier damping during punch so spin settles while straightening
+		_sway_ang_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * 8.0 * delta)
 	else:
-		# No pivot: spring toward centre (pure tilt rotation)
-		_sway_vel -= _sway_pos * SWAY_SPRING * delta
-		_sway_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * delta)
+		_sway_ang_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * delta)
+		_sway_angle   += _sway_ang_vel * delta
 
-	_sway_pos += _sway_vel * delta
+	# Cartesian position of the close end, used by the transform below.
+	# During punch the object straightens (sway_pos = 0 → tip and butt aligned).
+	var sway_pos: Vector2 = Vector2.ZERO
+	if not punch_held and pivot > 0.001:
+		sway_pos = Vector2(cos(_sway_angle), sin(_sway_angle)) * pivot
 
 	# ── Object transform + endpoint collision protection ─────────────────────
 	# For pivot objects the system runs two raycasts every frame:
 	#   Ray 1 (anchor / tip)  — camera → intended tip position.
 	#     If geometry is in the way, depth is shortened so the tip stays clear.
 	#   Ray 2 (butt / close end) — tip → intended butt position.
-	#     If geometry is in the way, the butt is clamped back and the sway
+	#     If geometry is in the way, the butt is clamped back and angular
 	#     velocity is killed so the object doesn't keep pushing into the surface.
 	# The existing body_test_motion sweep then handles linear centre-motion for
 	# all objects (pivot and no-pivot alike).
@@ -448,13 +436,13 @@ func _carry_update(delta: float):
 
 		# ── Pivot-path transform (computed with post-ray depth) ───────────────
 		# Camera-local layout:
-		#   tip   = (0,   0,   -depth)
-		#   butt  = (sx,  sy,  -depth + 2*pivot)
-		#   centre = midpoint = (sx/2, sy/2, -depth + pivot)
+		#   tip    = (0,          0,          -depth)
+		#   butt   = (sway_pos.x, sway_pos.y, -depth + 2*pivot)
+		#   centre = midpoint
 		target_pos = cam_pos + cam_basis * Vector3(
-			_sway_pos.x * 0.5, _sway_pos.y * 0.5, -depth + pivot
+			sway_pos.x * 0.5, sway_pos.y * 0.5, -depth + pivot
 		)
-		var fwd_cam:   Vector3 = Vector3(-_sway_pos.x, -_sway_pos.y, -2.0 * pivot).normalized()
+		var fwd_cam:   Vector3 = Vector3(-sway_pos.x, -sway_pos.y, -2.0 * pivot).normalized()
 		var fwd_world: Vector3 = cam_basis * fwd_cam
 		var up_ref:    Vector3 = cam_basis.y
 		if abs(fwd_world.dot(up_ref)) > 0.999:
@@ -476,13 +464,12 @@ func _carry_update(delta: float):
 			var new_fwd: Vector3 = (anchor - safe_butt).normalized()
 			if abs(new_fwd.dot(up_ref)) > 0.999:
 				up_ref = cam_basis.x
-			target_basis = Basis.looking_at(new_fwd, up_ref) * rotation_offset
-			_sway_vel    = Vector2.ZERO  # kill velocity into the surface
+			target_basis   = Basis.looking_at(new_fwd, up_ref) * rotation_offset
+			_sway_ang_vel  = 0.0  # kill angular velocity into the surface
 	else:
-		# No-pivot path: centre at camera-forward point, sway as tilt rotation.
-		target_pos = cam_pos + cam_basis * Vector3(0.0, 0.0, -depth)
-		var tilt: Basis = Basis.from_euler(Vector3(-_sway_pos.y, _sway_pos.x, 0.0) * SWAY_TILT_SCALE)
-		target_basis    = cam_basis * tilt * rotation_offset
+		# No-pivot path: centre at camera-forward point, no sway tilt.
+		target_pos   = cam_pos + cam_basis * Vector3(0.0, 0.0, -depth)
+		target_basis = cam_basis * rotation_offset
 
 	# ── Centre sweep (all objects) ────────────────────────────────────────────
 	# Catches linear-motion penetration that the endpoint rays don't cover.
