@@ -15,9 +15,16 @@ var THROW_SPEED = 15.0
 var MAX_CARRY_DIST = 7.0
 var PUNCH_COOLDOWN = 0.5
 var PUNCH_PUSHBACK = 0.4
+var SWAY_SPRING = 80.0        # spring constant pulling close end onto the circle (units/s²/unit)
+var SWAY_DAMPING = 5.0        # exponential damping rate (per second)
+var SWAY_MOUSE_SCALE = 0.004  # pixels → sway velocity (units/s)
+var SWAY_TILT_SCALE = 0.5     # sway_pos units → tilt radians (no-pivot objects only)
 
 var sliding := false
 var tab_mode := false
+var _sway_pos: Vector2 = Vector2.ZERO   # camera-local XY displacement of the close end (world units)
+var _sway_vel: Vector2 = Vector2.ZERO   # derivative of _sway_pos (units/s)
+var _mouse_delta: Vector2 = Vector2.ZERO # accumulated mouse movement since last carry update
 var held_object: PhysicsBody3D = null
 var held_interactable: Interactable = null
 var held_holdable: Holdable = null
@@ -139,6 +146,8 @@ func _unhandled_input(event):
 		rotate_y(-event.relative.x * MOUSE_SENSITIVITY)
 		camera.rotate_x(-event.relative.y * MOUSE_SENSITIVITY)
 		camera.rotation.x = clamp(camera.rotation.x, -PI/2, PI/2)
+		if held_object:
+			_mouse_delta += event.relative
 
 	# Left click in tab mode
 	if tab_mode and event is InputEventMouseButton:
@@ -268,6 +277,9 @@ func _reset_held_state():
 	punch_held = false
 	punch_cooldown = 0.0
 	punch_measuring = false
+	_sway_pos = Vector2.ZERO
+	_sway_vel = Vector2.ZERO
+	_mouse_delta = Vector2.ZERO
 
 func _release_object():
 	if not held_object:
@@ -351,6 +363,8 @@ func _carry_update(delta: float):
 	if held_object.global_position.distance_to(camera.global_position) > MAX_CARRY_DIST:
 		_release_object()
 		return
+
+	# ── Punch offset ─────────────────────────────────────────────────────────
 	if punch_held:
 		if punch_offset < PUNCH_DISTANCE:
 			punch_velocity += PUNCH_ACCEL * delta
@@ -358,22 +372,94 @@ func _carry_update(delta: float):
 	else:
 		punch_velocity = 0.0
 		punch_offset = move_toward(punch_offset, 0.0, PUNCH_RETURN_SPEED * delta)
-	var rotation_offset := Basis.IDENTITY
-	if held_holdable:
-		rotation_offset = Basis.from_euler(held_holdable.hold_rotation * (PI / 180.0))
-	var target_basis = camera.global_transform.basis * rotation_offset
-	var target_pos = camera.global_position + -camera.global_transform.basis.z * (CARRY_DISTANCE + punch_offset)
-	var motion = target_pos - held_object.global_position
+
+	# ── Sway physics ──────────────────────────────────────────────────────────
+	# The far (screen-centre) end of the object is anchored at the camera's
+	# forward look point.  The close (player-side) end floats on an imaginary
+	# circle of radius = hold_pivot, pushed back onto it by an elastic spring.
+	# When hold_pivot == 0 the same spring collapses to a centre-restore, and
+	# the sway is expressed purely as a tilt rotation around the carry position.
+	var pivot := held_holdable.hold_pivot if held_holdable else 0.0
+
+	# Consume accumulated mouse delta — drives the close end laterally
+	_sway_vel += _mouse_delta * SWAY_MOUSE_SCALE
+	_mouse_delta = Vector2.ZERO
+
+	if pivot > 0.001:
+		# Elastic force: pull _sway_pos toward the circle of radius = pivot.
+		# Force = k * (R - |pos|) * pos_dir  →  positive inside circle, negative outside.
+		var dist := _sway_pos.length()
+		if dist > 0.0001:
+			_sway_vel += (pivot - dist) * (_sway_pos / dist) * SWAY_SPRING * delta
+		else:
+			# At the exact centre there is no direction; give a downward nudge
+			# so the spring settles to the natural bottom-of-circle rest.
+			_sway_vel += Vector2(0.0, -1.0) * pivot * SWAY_SPRING * delta
+	else:
+		# No pivot: spring toward the centre (pure tilt effect)
+		_sway_vel -= _sway_pos * SWAY_SPRING * delta
+
+	# Exponential damping (applied uniformly regardless of punch state)
+	_sway_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * delta)
+	_sway_pos += _sway_vel * delta
+
+	# ── Object transform ──────────────────────────────────────────────────────
+	var rotation_offset := Basis.from_euler(held_holdable.hold_rotation * (PI / 180.0)) \
+		if held_holdable else Basis.IDENTITY
+
+	var cam_basis := camera.global_transform.basis
+	var cam_pos   := camera.global_position
+	var depth     := CARRY_DISTANCE + punch_offset  # positive scalar
+
+	var target_pos: Vector3
+	var target_basis: Basis
+
+	if pivot > 0.001:
+		# Far end is anchored at the camera-forward point (screen centre).
+		# In camera-local space:
+		#   far_end  = (0, 0, -depth)
+		#   close_end = (_sway_pos.x, _sway_pos.y, -depth + 2*pivot)   [+Z is toward player]
+		#   centre    = average = (_sway_pos.x/2, _sway_pos.y/2, -depth + pivot)
+		target_pos = cam_pos + cam_basis * Vector3(
+			_sway_pos.x * 0.5,
+			_sway_pos.y * 0.5,
+			-depth + pivot
+		)
+
+		# Object "forward" = direction from close end to far end (camera-local)
+		#   = far_end - close_end = (-sx, -sy, -2*pivot)
+		var fwd_cam  := Vector3(-_sway_pos.x, -_sway_pos.y, -2.0 * pivot).normalized()
+		var fwd_world := cam_basis * fwd_cam
+
+		# Build a Basis whose -Z aligns with fwd_world.
+		# Guard against fwd being parallel to cam up (degenerate cross-product).
+		var up_ref := cam_basis.y
+		if abs(fwd_world.dot(up_ref)) > 0.999:
+			up_ref = cam_basis.x
+		target_basis = Basis.looking_at(fwd_world, up_ref) * rotation_offset
+	else:
+		# No-pivot path: centre sits at the camera-forward point; sway is
+		# expressed as a tilt rotation around the carry position.
+		target_pos = cam_pos + cam_basis * Vector3(0.0, 0.0, -depth)
+		var tilt := Basis.from_euler(
+			Vector3(-_sway_pos.y, _sway_pos.x, 0.0) * SWAY_TILT_SCALE
+		)
+		target_basis = cam_basis * tilt * rotation_offset
+
+	# ── Collision sweep ───────────────────────────────────────────────────────
+	var motion := target_pos - held_object.global_position
 	_test_params.from = held_object.global_transform
 	_test_params.motion = motion
 	if PhysicsServer3D.body_test_motion(held_object.get_rid(), _test_params, _test_result):
 		target_pos = held_object.global_position + _test_result.get_travel()
 		if punch_held and punch_velocity > 0.0:
-			var punch_dir = -camera.global_transform.basis.z
+			var punch_dir := -camera.global_transform.basis.z
 			velocity -= punch_dir * punch_velocity * PUNCH_PUSHBACK * delta
+
 	if punch_measuring:
-		var frame_speed = held_object.global_position.distance_to(target_pos) / delta
+		var frame_speed := held_object.global_position.distance_to(target_pos) / delta
 		punch_peak_speed = maxf(punch_peak_speed, frame_speed)
+
 	held_object.global_transform = Transform3D(target_basis, target_pos)
 
 # ── Multiplayer RPCs ────────────────────────────────────────────────────────

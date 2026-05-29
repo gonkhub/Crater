@@ -2,6 +2,7 @@ class_name Holdable
 extends Node
 
 @export var hold_rotation: Vector3 = Vector3.ZERO
+@export var hold_pivot: float = 0.0   # world-space distance from object centre to the far (screen-centre) end
 @export var m1_action: String = "punch"
 @export var m2_action: String = ""
 @export var scroll_up_action: String = "throw"
