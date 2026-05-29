@@ -381,8 +381,9 @@ func _carry_update(delta: float):
 	# the sway is expressed purely as a tilt rotation around the carry position.
 	var pivot: float = held_holdable.hold_pivot if held_holdable else 0.0
 
-	# Consume accumulated mouse delta — drives the close end laterally
-	_sway_vel += _mouse_delta * SWAY_MOUSE_SCALE
+	# Consume accumulated mouse delta — drives the close end laterally.
+	# Negated: looking left → close end swings right, looking down → swings up.
+	_sway_vel -= _mouse_delta * SWAY_MOUSE_SCALE
 	_mouse_delta = Vector2.ZERO
 
 	if pivot > 0.001:

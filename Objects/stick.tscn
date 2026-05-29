@@ -1,14 +1,14 @@
-[gd_scene load_steps=6 format=4 uid="uid://stick001scn01"]
+[gd_scene load_steps=8 format=4 uid="uid://stick001scn01"]
 
 [ext_resource type="Script" path="res://interactable.gd" id="1_inter0"]
 [ext_resource type="Script" path="res://holdable.gd" id="2_hold0"]
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_wood"]
+[sub_resource type="StandardMaterial3D" id="SM_wood"]
 albedo_color = Color(0.55, 0.35, 0.15, 1)
 roughness = 0.9
 
 [sub_resource type="CapsuleMesh" id="CapsuleMesh_stick"]
-material = SubResource("StandardMaterial3D_wood")
+material = SubResource("SM_wood")
 radius = 0.04
 height = 1.2
 
@@ -16,10 +16,23 @@ height = 1.2
 radius = 0.04
 height = 1.2
 
+[sub_resource type="StandardMaterial3D" id="SM_guard"]
+albedo_color = Color(0.22, 0.15, 0.06, 1)
+roughness = 0.75
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_guard"]
+material = SubResource("SM_guard")
+radius = 0.055
+height = 0.42
+
 [node name="stick" type="RigidBody3D"]
 
 [node name="Mesh" type="MeshInstance3D" parent="."]
 mesh = SubResource("CapsuleMesh_stick")
+
+[node name="Guard" type="MeshInstance3D" parent="."]
+transform = Transform3D(0, 1, 0, -1, 0, 0, 0, 0, 1, 0, -0.3, 0)
+mesh = SubResource("CapsuleMesh_guard")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]
 shape = SubResource("CapsuleShape3D_stick")
