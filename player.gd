@@ -15,14 +15,17 @@ var THROW_SPEED = 15.0
 var MAX_CARRY_DIST = 7.0
 var PUNCH_COOLDOWN = 0.5
 var PUNCH_PUSHBACK = 0.4
-var SWAY_DAMPING = 0.3        # angular damping rate (per second) — low = very slippery
+var SWAY_DAMPING = 0.3        # position damping rate (per second)
+var ROLL_DAMPING = 0.08       # axial-spin damping — much lower so spin coasts freely
 var SWAY_MOUSE_SCALE = 0.008  # pixels → angular velocity (rad/s, scaled by 1/pivot)
 var ENDPOINT_MARGIN = 0.06    # minimum clearance between object endpoints and surfaces
 
 var sliding := false
 var tab_mode := false
-var _sway_angle: float = -PI / 2.0  # angle of close end on the circle (−½π = bottom = natural rest)
-var _sway_ang_vel: float = 0.0      # angular velocity (rad/s, + = counterclockwise)
+var _sway_angle: float = -PI / 2.0   # position of close end on the circle (−½π = bottom)
+var _sway_ang_vel: float = 0.0       # position angular velocity (rad/s)
+var _roll_angle: float = -PI / 2.0   # axial spin angle (starts matched to sway rest)
+var _roll_ang_vel: float = 0.0       # axial spin angular velocity (rad/s)
 var _mouse_delta: Vector2 = Vector2.ZERO # accumulated mouse movement since last carry update
 var held_object: PhysicsBody3D = null
 var held_interactable: Interactable = null
@@ -278,6 +281,8 @@ func _reset_held_state():
 	punch_measuring = false
 	_sway_angle = -PI / 2.0
 	_sway_ang_vel = 0.0
+	_roll_angle = -PI / 2.0
+	_roll_ang_vel = 0.0
 	_mouse_delta = Vector2.ZERO
 
 func _release_object():
@@ -372,27 +377,33 @@ func _carry_update(delta: float):
 		punch_velocity = 0.0
 		punch_offset = move_toward(punch_offset, 0.0, PUNCH_RETURN_SPEED * delta)
 
-	# ── Sway physics (polar / angular) ───────────────────────────────────────
-	# The close end rotates around the anchor circle in a single angular degree
-	# of freedom. Mouse movement is projected onto the circle's tangent so only
-	# rotational impulse is added — no radial spring, no bouncing.
+	# ── Sway physics (two independent angular degrees of freedom) ───────────
+	# _sway_angle / _sway_ang_vel — position of the close end on the anchor circle
+	# _roll_angle  / _roll_ang_vel — axial spin around the object's long axis
+	#
+	# Both receive the same mouse impulse (tangential projection), but roll has
+	# ~4× lower damping so it coasts freely long after the position settles.
+	# Because they diverge over time there is no tidal locking.
 	var pivot: float = held_holdable.hold_pivot if held_holdable else 0.0
 
-	# Tangent direction at the current angle (counterclockwise = + angle)
 	var tangent: Vector2 = Vector2(-sin(_sway_angle), cos(_sway_angle))
-	# Project mouse onto tangent; negate so looking-left spins the close end
-	# rightward (positive angle = counterclockwise = toward the right from bottom)
-	_sway_ang_vel -= _mouse_delta.dot(tangent) * SWAY_MOUSE_SCALE / maxf(pivot, 0.25)
+	var impulse: float = -_mouse_delta.dot(tangent) * SWAY_MOUSE_SCALE / maxf(pivot, 0.25)
+	_sway_ang_vel += impulse
+	_roll_ang_vel += impulse   # same kick; diverges from sway because ROLL_DAMPING << SWAY_DAMPING
 	_mouse_delta = Vector2.ZERO
 
 	if punch_held:
-		# Heavier damping during punch so spin settles while straightening
+		# Position settles quickly when straightening
 		_sway_ang_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * 8.0 * delta)
 	else:
 		_sway_ang_vel *= maxf(0.0, 1.0 - SWAY_DAMPING * delta)
 		_sway_angle   += _sway_ang_vel * delta
 
-	# Cartesian position of the close end, used by the transform below.
+	# Roll always updates — keeps spinning through punches (spinning stab effect)
+	_roll_ang_vel *= maxf(0.0, 1.0 - ROLL_DAMPING * delta)
+	_roll_angle   += _roll_ang_vel * delta
+
+	# Cartesian position of the close end.
 	# During punch the object straightens (sway_pos = 0 → tip and butt aligned).
 	var sway_pos: Vector2 = Vector2.ZERO
 	if not punch_held and pivot > 0.001:
@@ -444,13 +455,10 @@ func _carry_update(delta: float):
 		)
 		var fwd_cam:   Vector3 = Vector3(-sway_pos.x, -sway_pos.y, -2.0 * pivot).normalized()
 		var fwd_world: Vector3 = cam_basis * fwd_cam
-		# up_ref rotates with _sway_angle so the object spins around its long
-		# axis as the close end sweeps the circle (axial / helicopter-blade spin).
-		# Derivation: crossguard must point tangent to the circle at angle θ,
-		# i.e. (-sin θ, cos θ) in camera XY. Working back through looking_at ×
-		# rotation_offset gives up_ref = cam_basis * (-cos θ, -sin θ, 0).
-		# At the default rest angle (θ = -π/2) this equals cam_basis.y — unchanged.
-		var up_ref: Vector3 = cam_basis * Vector3(-cos(_sway_angle), -sin(_sway_angle), 0.0)
+		# up_ref is driven by _roll_angle (the independent spin DOF), not by sway
+		# position. Because _roll_angle accumulates velocity with low damping it
+		# can spin freely — no tidal locking with the butt's orbital position.
+		var up_ref: Vector3 = cam_basis * Vector3(-cos(_roll_angle), -sin(_roll_angle), 0.0)
 		if abs(fwd_world.dot(up_ref)) > 0.999:
 			up_ref = cam_basis.x
 		target_basis = Basis.looking_at(fwd_world, up_ref) * rotation_offset
