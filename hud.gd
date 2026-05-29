@@ -236,16 +236,15 @@ func show_info_popup(interactable: Interactable, target: Node) -> void:
 			break
 	if holdable:
 		var weight_names = ["light", "medium", "heavy"]
-		var weight_rtl = RichTextLabel.new()
-		weight_rtl.bbcode_enabled = true
-		weight_rtl.fit_content = true
-		weight_rtl.scroll_active = false
-		weight_rtl.custom_minimum_size = Vector2(56, 0)
-		weight_rtl.add_theme_font_size_override("normal_font_size", 11)
-		weight_rtl.add_theme_color_override("default_color", Color(0.60, 0.60, 0.60))
-		weight_rtl.text = "[right][i]" + weight_names[holdable.weight] + "[/i][/right]"
-		weight_rtl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		header.add_child(weight_rtl)
+		var weight_lbl = Label.new()
+		weight_lbl.text = weight_names[holdable.weight]
+		weight_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		weight_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		weight_lbl.size_flags_horizontal = Control.SIZE_SHRINK_END
+		weight_lbl.add_theme_font_size_override("font_size", 11)
+		weight_lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.60))
+		weight_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		header.add_child(weight_lbl)
 
 	vbox.add_child(HSeparator.new())
 
