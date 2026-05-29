@@ -21,6 +21,7 @@ var SWAY_MOUSE_SCALE = 0.004  # pixels → sway velocity (units/s)
 var SWAY_TILT_SCALE = 0.5     # sway_pos units → tilt radians (no-pivot objects only)
 var SWAY_DEAD_RADIUS = 0.15   # inner dead-zone radius; centre repels the close end outward
 var SWAY_PUNCH_SPRING = 500.0 # spring constant snapping sway to centre during a punch
+var ENDPOINT_MARGIN = 0.06    # minimum clearance between object endpoints and surfaces
 
 var sliding := false
 var tab_mode := false
@@ -409,60 +410,90 @@ func _carry_update(delta: float):
 
 	_sway_pos += _sway_vel * delta
 
-	# ── Object transform ──────────────────────────────────────────────────────
+	# ── Object transform + endpoint collision protection ─────────────────────
+	# For pivot objects the system runs two raycasts every frame:
+	#   Ray 1 (anchor / tip)  — camera → intended tip position.
+	#     If geometry is in the way, depth is shortened so the tip stays clear.
+	#   Ray 2 (butt / close end) — tip → intended butt position.
+	#     If geometry is in the way, the butt is clamped back and the sway
+	#     velocity is killed so the object doesn't keep pushing into the surface.
+	# The existing body_test_motion sweep then handles linear centre-motion for
+	# all objects (pivot and no-pivot alike).
 	var rotation_offset: Basis = Basis.from_euler(held_holdable.hold_rotation * (PI / 180.0)) if held_holdable else Basis.IDENTITY
 
 	var cam_basis: Basis   = camera.global_transform.basis
 	var cam_pos:   Vector3 = camera.global_position
-	var depth: float = CARRY_DISTANCE + punch_offset  # positive scalar
+	var depth: float       = CARRY_DISTANCE + punch_offset
 
-	var target_pos: Vector3
+	var target_pos:   Vector3
 	var target_basis: Basis
 
 	if pivot > 0.001:
-		# Far end is anchored at the camera-forward point (screen centre).
-		# In camera-local space:
-		#   far_end  = (0, 0, -depth)
-		#   close_end = (_sway_pos.x, _sway_pos.y, -depth + 2*pivot)   [+Z is toward player]
-		#   centre    = average = (_sway_pos.x/2, _sway_pos.y/2, -depth + pivot)
+		var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
+		var ray: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.new()
+		ray.exclude = [get_rid(), held_object.get_rid()]
+
+		# ── Ray 1: anchor (tip / far end) ────────────────────────────────────
+		# Prevents the tip from passing into any surface in front of the player.
+		var anchor: Vector3 = cam_pos + cam_basis * Vector3(0.0, 0.0, -depth)
+		ray.from = cam_pos
+		ray.to   = anchor
+		var tip_hit: Dictionary = space.intersect_ray(ray)
+		if tip_hit:
+			depth  = maxf(cam_pos.distance_to(tip_hit.position) - ENDPOINT_MARGIN, 0.1)
+			anchor = cam_pos + cam_basis * Vector3(0.0, 0.0, -depth)
+
+		# ── Pivot-path transform (computed with post-ray depth) ───────────────
+		# Camera-local layout:
+		#   tip   = (0,   0,   -depth)
+		#   butt  = (sx,  sy,  -depth + 2*pivot)
+		#   centre = midpoint = (sx/2, sy/2, -depth + pivot)
 		target_pos = cam_pos + cam_basis * Vector3(
-			_sway_pos.x * 0.5,
-			_sway_pos.y * 0.5,
-			-depth + pivot
+			_sway_pos.x * 0.5, _sway_pos.y * 0.5, -depth + pivot
 		)
-
-		# Object "forward" = direction from close end to far end (camera-local)
-		#   = far_end - close_end = (-sx, -sy, -2*pivot)
-		var fwd_cam  := Vector3(-_sway_pos.x, -_sway_pos.y, -2.0 * pivot).normalized()
-		var fwd_world := cam_basis * fwd_cam
-
-		# Build a Basis whose -Z aligns with fwd_world.
-		# Guard against fwd being parallel to cam up (degenerate cross-product).
-		var up_ref := cam_basis.y
+		var fwd_cam:   Vector3 = Vector3(-_sway_pos.x, -_sway_pos.y, -2.0 * pivot).normalized()
+		var fwd_world: Vector3 = cam_basis * fwd_cam
+		var up_ref:    Vector3 = cam_basis.y
 		if abs(fwd_world.dot(up_ref)) > 0.999:
 			up_ref = cam_basis.x
 		target_basis = Basis.looking_at(fwd_world, up_ref) * rotation_offset
-	else:
-		# No-pivot path: centre sits at the camera-forward point; sway is
-		# expressed as a tilt rotation around the carry position.
-		target_pos = cam_pos + cam_basis * Vector3(0.0, 0.0, -depth)
-		var tilt := Basis.from_euler(
-			Vector3(-_sway_pos.y, _sway_pos.x, 0.0) * SWAY_TILT_SCALE
-		)
-		target_basis = cam_basis * tilt * rotation_offset
 
-	# ── Collision sweep ───────────────────────────────────────────────────────
-	var motion := target_pos - held_object.global_position
-	_test_params.from = held_object.global_transform
+		# ── Ray 2: butt (close end) ───────────────────────────────────────────
+		# Prevents the butt from embedding into geometry behind the anchor.
+		# Because centre = (anchor + butt) / 2, butt = 2*centre - anchor.
+		var butt: Vector3 = 2.0 * target_pos - anchor
+		ray.from = anchor
+		ray.to   = butt
+		var butt_hit: Dictionary = space.intersect_ray(ray)
+		if butt_hit:
+			var butt_dir:  Vector3 = (butt - anchor).normalized()
+			var safe_dist: float   = maxf(anchor.distance_to(butt_hit.position) - ENDPOINT_MARGIN, 0.0)
+			var safe_butt: Vector3 = anchor + butt_dir * safe_dist
+			target_pos = (anchor + safe_butt) * 0.5
+			var new_fwd: Vector3 = (anchor - safe_butt).normalized()
+			if abs(new_fwd.dot(up_ref)) > 0.999:
+				up_ref = cam_basis.x
+			target_basis = Basis.looking_at(new_fwd, up_ref) * rotation_offset
+			_sway_vel    = Vector2.ZERO  # kill velocity into the surface
+	else:
+		# No-pivot path: centre at camera-forward point, sway as tilt rotation.
+		target_pos = cam_pos + cam_basis * Vector3(0.0, 0.0, -depth)
+		var tilt: Basis = Basis.from_euler(Vector3(-_sway_pos.y, _sway_pos.x, 0.0) * SWAY_TILT_SCALE)
+		target_basis    = cam_basis * tilt * rotation_offset
+
+	# ── Centre sweep (all objects) ────────────────────────────────────────────
+	# Catches linear-motion penetration that the endpoint rays don't cover.
+	var motion: Vector3 = target_pos - held_object.global_position
+	_test_params.from   = held_object.global_transform
 	_test_params.motion = motion
 	if PhysicsServer3D.body_test_motion(held_object.get_rid(), _test_params, _test_result):
 		target_pos = held_object.global_position + _test_result.get_travel()
 		if punch_held and punch_velocity > 0.0:
-			var punch_dir := -camera.global_transform.basis.z
+			var punch_dir: Vector3 = -camera.global_transform.basis.z
 			velocity -= punch_dir * punch_velocity * PUNCH_PUSHBACK * delta
 
 	if punch_measuring:
-		var frame_speed := held_object.global_position.distance_to(target_pos) / delta
+		var frame_speed: float = held_object.global_position.distance_to(target_pos) / delta
 		punch_peak_speed = maxf(punch_peak_speed, frame_speed)
 
 	held_object.global_transform = Transform3D(target_basis, target_pos)
