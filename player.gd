@@ -7,6 +7,8 @@ var GRAVITY_SCALE = 2.5
 var SLIDE_FRICTION = 4.0
 var INTERACT_RANGE = 5.0
 var CARRY_DISTANCE = 2.0
+var CARRY_OFFSET_X: float =  0.25   # camera-right offset for carry anchor (m)
+var CARRY_OFFSET_Y: float = -0.35   # camera-down  offset for carry anchor (m)
 var PUNCH_DISTANCE = 1.5
 var PUNCH_ACCEL = 120.0
 var PUNCH_RETURN_SPEED = 3.5
@@ -404,10 +406,12 @@ func _carry_update(delta: float):
 	_roll_angle   += _roll_ang_vel * delta
 
 	# Cartesian position of the close end.
-	# During punch the object straightens (sway_pos = 0 → tip and butt aligned).
+	# Scale by (1 - punch_t) so the butt smoothly closes toward the tip as the
+	# punch extends, then drifts back out as it retracts — no snap.
 	var sway_pos: Vector2 = Vector2.ZERO
-	if not punch_held and pivot > 0.001:
-		sway_pos = Vector2(cos(_sway_angle), sin(_sway_angle)) * pivot
+	if pivot > 0.001:
+		var punch_t: float = punch_offset / PUNCH_DISTANCE
+		sway_pos = Vector2(cos(_sway_angle), sin(_sway_angle)) * pivot * (1.0 - punch_t)
 
 	# ── Object transform + endpoint collision protection ─────────────────────
 	# For pivot objects the system runs two raycasts every frame:
@@ -434,7 +438,7 @@ func _carry_update(delta: float):
 
 		# ── Ray 1: anchor (tip / far end) ────────────────────────────────────
 		# Prevents the tip from passing into any surface in front of the player.
-		var anchor: Vector3 = cam_pos + cam_basis * Vector3(0.0, 0.0, -depth)
+		var anchor: Vector3 = cam_pos + cam_basis * Vector3(CARRY_OFFSET_X, CARRY_OFFSET_Y, -depth)
 		ray.from = cam_pos
 		ray.to   = anchor
 		var tip_hit: Dictionary = space.intersect_ray(ray)
@@ -443,15 +447,17 @@ func _carry_update(delta: float):
 			# behind the camera plane and into the player's collision capsule.
 			var min_depth: float = 2.0 * pivot + ENDPOINT_MARGIN
 			depth  = maxf(cam_pos.distance_to(tip_hit.position) - ENDPOINT_MARGIN, min_depth)
-			anchor = cam_pos + cam_basis * Vector3(0.0, 0.0, -depth)
+			anchor = cam_pos + cam_basis * Vector3(CARRY_OFFSET_X, CARRY_OFFSET_Y, -depth)
 
 		# ── Pivot-path transform (computed with post-ray depth) ───────────────
-		# Camera-local layout:
-		#   tip    = (0,          0,          -depth)
-		#   butt   = (sway_pos.x, sway_pos.y, -depth + 2*pivot)
+		# Camera-local layout (O = carry offset):
+		#   tip    = (O.x,              O.y,              -depth)
+		#   butt   = (O.x + sway_pos.x, O.y + sway_pos.y, -depth + 2*pivot)
 		#   centre = midpoint
 		target_pos = cam_pos + cam_basis * Vector3(
-			sway_pos.x * 0.5, sway_pos.y * 0.5, -depth + pivot
+			CARRY_OFFSET_X + sway_pos.x * 0.5,
+			CARRY_OFFSET_Y + sway_pos.y * 0.5,
+			-depth + pivot
 		)
 		var fwd_cam:   Vector3 = Vector3(-sway_pos.x, -sway_pos.y, -2.0 * pivot).normalized()
 		var fwd_world: Vector3 = cam_basis * fwd_cam
@@ -481,8 +487,8 @@ func _carry_update(delta: float):
 			target_basis   = Basis.looking_at(new_fwd, up_ref) * rotation_offset
 			_sway_ang_vel  = 0.0  # kill angular velocity into the surface
 	else:
-		# No-pivot path: centre at camera-forward point, no sway tilt.
-		target_pos   = cam_pos + cam_basis * Vector3(0.0, 0.0, -depth)
+		# No-pivot path: centre at carry offset point, no sway tilt.
+		target_pos   = cam_pos + cam_basis * Vector3(CARRY_OFFSET_X, CARRY_OFFSET_Y, -depth)
 		target_basis = cam_basis * rotation_offset
 
 	# ── Centre sweep (all objects) ────────────────────────────────────────────
