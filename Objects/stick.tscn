@@ -1,0 +1,34 @@
+[gd_scene load_steps=6 format=4 uid="uid://stick001scn01"]
+
+[ext_resource type="Script" path="res://interactable.gd" id="1_inter0"]
+[ext_resource type="Script" path="res://holdable.gd" id="2_hold0"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_wood"]
+albedo_color = Color(0.55, 0.35, 0.15, 1)
+roughness = 0.9
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_stick"]
+material = SubResource("StandardMaterial3D_wood")
+radius = 0.04
+height = 1.2
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_stick"]
+radius = 0.04
+height = 1.2
+
+[node name="stick" type="RigidBody3D"]
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+mesh = SubResource("CapsuleMesh_stick")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("CapsuleShape3D_stick")
+
+[node name="Interactable" type="Node" parent="."]
+script = ExtResource("1_inter0")
+display_name = "Stick"
+
+[node name="Holdable" type="Node" parent="."]
+script = ExtResource("2_hold0")
+hold_rotation = Vector3(-90, 0, 0)
+hold_pivot = 0.6

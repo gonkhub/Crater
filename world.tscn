@@ -1,8 +1,9 @@
-[gd_scene load_steps=14 format=4 uid="uid://cuoar8pyen07f"]
+[gd_scene load_steps=15 format=4 uid="uid://cuoar8pyen07f"]
 
 [ext_resource type="Script" path="res://world.gd" id="3_worldg"]
 [ext_resource type="PackedScene" uid="uid://dio001scn01" path="res://Objects/adio.tscn" id="4_adio0"]
 [ext_resource type="PackedScene" uid="uid://mush001scn01" path="res://Objects/mushroom.tscn" id="5_mush0"]
+[ext_resource type="PackedScene" uid="uid://stick001scn01" path="res://Objects/stick.tscn" id="6_stick0"]
 
 [sub_resource type="Environment" id="Environment_bta2e"]
 background_mode = 2
@@ -134,3 +135,6 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.375314, 0.40941, 3.45408)
 
 [node name="Mushroom" parent="." instance=ExtResource("5_mush0")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.6893, 0.59729, 6.7772)
+
+[node name="Stick" parent="." instance=ExtResource("6_stick0")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.5, 0.7, 4.5)
