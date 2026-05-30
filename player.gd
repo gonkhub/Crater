@@ -738,7 +738,7 @@ func _noclip_fly(delta: float) -> void:
 func _execute_despawn_at_cursor() -> void:
 	var mouse_pos := get_viewport().get_mouse_position()
 	var origin    := camera.project_ray_origin(mouse_pos)
-	var ray_end   := origin + camera.project_ray_normal(mouse_pos) * INTERACT_RANGE
+	var ray_end: Vector3 = origin + camera.project_ray_normal(mouse_pos) * INTERACT_RANGE
 	var params    := PhysicsRayQueryParameters3D.create(origin, ray_end)
 	params.exclude = [get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(params)

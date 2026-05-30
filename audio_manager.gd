@@ -105,10 +105,10 @@ func _process(delta: float) -> void:
 
 # ── Phase reaction ────────────────────────────────────────────────────────────
 
-func _on_phase_changed(new_phase: TimeSystem.Phase, _old: TimeSystem.Phase) -> void:
+func _on_phase_changed(new_phase: int, _old: int) -> void:
 	_apply_phase_targets(new_phase)
 
-func _apply_phase_targets(phase: TimeSystem.Phase) -> void:
+func _apply_phase_targets(phase: int) -> void:
 	var targets: Dictionary
 	match phase:
 		TimeSystem.Phase.BELOW:   targets = _VOL_BLOOD_MOON
