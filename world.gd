@@ -22,6 +22,13 @@ func _ready():
 	hud = preload("res://hud.tscn").instantiate()
 	add_child(hud)
 
+	# ── Sky system ────────────────────────────────────────────────────────────
+	# SkyManager and CloudCeiling are authored in world.tscn, but this guard
+	# creates them at runtime if the scene file is stale or the editor hasn't
+	# reloaded it after the tscn edit.  Also renames the legacy DirectionalLight3D
+	# to StarLight so SkyManager can find it by the expected name.
+	_ensure_sky_nodes()
+
 	# Generate trimesh collision for the cave at runtime.
 	# The GLB scene importer ignores _subresources physics flags;
 	# create_trimesh_collision() is the reliable alternative.
@@ -256,6 +263,28 @@ func _add_scene_object(scene_path: String, xform: Transform3D, obj_name: String)
 	obj.name = obj_name
 	add_child(obj)
 	obj.global_transform = xform   # must be set after add_child
+
+# ── Sky system bootstrapping ─────────────────────────────────────────────────
+
+## Guarantees SkyManager and CloudCeiling are present as siblings under this node.
+## Idempotent: if world.tscn already has them (after the .tscn is reloaded in the
+## editor) this is a no-op.  Also normalises the directional light name so
+## SkyManager can locate it by the expected name "StarLight".
+func _ensure_sky_nodes() -> void:
+	# Rename legacy default name → StarLight (no-op if already renamed in .tscn).
+	var dl := get_node_or_null("DirectionalLight3D")
+	if dl:
+		dl.name = "StarLight"
+
+	# SkyManager —————————————————————————————————————————————————————————————
+	if not get_node_or_null("SkyManager"):
+		var sm := Node.new()
+		sm.name = "SkyManager"
+		sm.set_script(load("res://sky_manager.gd"))
+		add_child(sm)
+
+	# CloudCeiling — retired.  Cloud rendering is now done entirely inside
+	# sky.gdshader via ray-plane projection (no geometry, no rectangular edges).
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 

@@ -24,6 +24,10 @@ var _tab_bar:     Control    = null   # button strip shown only in tab mode
 var _dev_panel:   Control    = null   # the floating dev tools window
 var _dev_sections: Dictionary = {}    # section_id → content VBoxContainer
 
+# ── Weather section state ─────────────────────────────────────────────────────
+var _sky_manager:    Node  = null   # resolved lazily via scene tree
+var _weather_readout: Label = null  # live telemetry label updated in _process
+
 # ── Tunable constants ────────────────────────────────────────────────────────
 
 const _SETTINGS = [
@@ -196,6 +200,7 @@ func _build_dev_panel() -> void:
 	_dev_sections = {}
 	_add_dev_section(sidebar, stack, "settings", "Settings", _build_settings_section)
 	_add_dev_section(sidebar, stack, "spawn",    "Spawn",    _build_spawn_section)
+	_add_dev_section(sidebar, stack, "weather",  "Weather",  _build_weather_section)
 
 	_activate_dev_section("settings")
 
@@ -628,3 +633,149 @@ func _on_tune_number_changed(value: float, prop: String, holdable: Holdable) -> 
 func _on_tune_dropdown_changed(index: int, prop: String, holdable: Holdable) -> void:
 	if is_instance_valid(holdable):
 		holdable.save_tune_value(prop, index)
+
+# ── Per-frame update (weather readout) ───────────────────────────────────────
+
+func _process(_delta: float) -> void:
+	if _weather_readout == null or not _weather_readout.is_visible_in_tree():
+		return
+	var sm := _get_sky_manager()
+	if sm == null:
+		_weather_readout.text = "SkyManager not found in scene"
+		return
+	var horizon_str: String = "above horizon" if sm.is_above_horizon else "BELOW horizon"
+	_weather_readout.text = (
+		"Az: %.1f°   El: %+.2f°   Int: %.2f\n[%s]"
+		% [sm.star_azimuth_deg, sm.star_elevation_deg, sm.light_intensity, horizon_str]
+	)
+
+# ── Weather section ───────────────────────────────────────────────────────────
+
+func _get_sky_manager() -> Node:
+	if _sky_manager == null or not is_instance_valid(_sky_manager):
+		# Use group membership — avoids any hardcoded scene-root name assumption.
+		_sky_manager = get_tree().get_first_node_in_group("sky_manager")
+	return _sky_manager
+
+func _build_weather_section(vbox: VBoxContainer) -> void:
+	# ── Live telemetry ────────────────────────────────────────────────────────
+	var readout = Label.new()
+	readout.text = "Az: —   El: —   Int: —"
+	readout.add_theme_font_size_override("font_size", 11)
+	readout.add_theme_color_override("font_color", Color(0.65, 0.85, 0.65))
+	readout.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vbox.add_child(readout)
+	_weather_readout = readout
+
+	vbox.add_child(HSeparator.new())
+
+	# ── Pause / resume cycle ──────────────────────────────────────────────────
+	var pause_btn = CheckButton.new()
+	pause_btn.text = "Pause Cycle"
+	pause_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pause_btn.toggled.connect(func(on: bool) -> void:
+		var sm := _get_sky_manager()
+		if sm:
+			sm.dev_set_paused(on))
+	vbox.add_child(pause_btn)
+
+	# ── Time scale ────────────────────────────────────────────────────────────
+	_add_weather_slider(vbox, "Speed ×", 0.1, 100.0, 0.1, 1.0,
+		func(v: float) -> void:
+			var sm := _get_sky_manager()
+			if sm:
+				sm.dev_set_speed(v),
+		"%.1f×")
+
+	vbox.add_child(HSeparator.new())
+
+	# ── Rotation position ─────────────────────────────────────────────────────
+	# Range matches ROTATION_PERIOD default (180 s).  Drag to scrub star azimuth.
+	_add_weather_slider(vbox, "Rotation (s)", 0.0, 180.0, 0.5, 0.0,
+		func(v: float) -> void:
+			var sm := _get_sky_manager()
+			if sm:
+				sm.dev_set_rotation_time(v))
+
+	# ── Orbital position ──────────────────────────────────────────────────────
+	# Range matches ORBITAL_PERIOD default (5400 s).
+	_add_weather_slider(vbox, "Orbit (s)", 0.0, 5400.0, 10.0, 0.0,
+		func(v: float) -> void:
+			var sm := _get_sky_manager()
+			if sm:
+				sm.dev_set_orbital_time(v),
+		"%.0f")
+
+	vbox.add_child(HSeparator.new())
+
+	# ── Elevation override ────────────────────────────────────────────────────
+	# Toggle enables the override; slider sets the value (-10°…+10°).
+	var elev_row = HBoxContainer.new()
+	vbox.add_child(elev_row)
+
+	var override_btn = CheckButton.new()
+	override_btn.text = "Override Elevation"
+	override_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	elev_row.add_child(override_btn)
+
+	var elev_val_lbl = Label.new()
+	elev_val_lbl.text = " 0.0°"
+	elev_val_lbl.custom_minimum_size = Vector2(48, 0)
+	elev_val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	elev_row.add_child(elev_val_lbl)
+
+	var elev_slider = HSlider.new()
+	elev_slider.min_value  = -10.0
+	elev_slider.max_value  =  10.0
+	elev_slider.step       =   0.1
+	elev_slider.value      =   0.0
+	elev_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(elev_slider)
+
+	elev_slider.value_changed.connect(func(v: float) -> void:
+		elev_val_lbl.text = "%+.1f°" % v
+		if override_btn.button_pressed:
+			var sm := _get_sky_manager()
+			if sm:
+				sm.dev_set_elevation_override(v))
+
+	override_btn.toggled.connect(func(on: bool) -> void:
+		var sm := _get_sky_manager()
+		if not sm:
+			return
+		if on:
+			sm.dev_set_elevation_override(elev_slider.value)
+		else:
+			sm.dev_clear_elevation_override())
+
+## Adds a labelled HSlider row to `vbox` and calls `on_change` when dragged.
+## `fmt` is an optional format string for the value label (default "%.2f").
+func _add_weather_slider(vbox: VBoxContainer, label_text: String,
+		min_v: float, max_v: float, step_v: float, default_v: float,
+		on_change: Callable, fmt: String = "%.2f") -> void:
+	var row = HBoxContainer.new()
+	vbox.add_child(row)
+
+	var lbl = Label.new()
+	lbl.text = label_text
+	lbl.custom_minimum_size   = Vector2(110, 0)
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(lbl)
+
+	var slider = HSlider.new()
+	slider.min_value           = min_v
+	slider.max_value           = max_v
+	slider.step                = step_v
+	slider.value               = default_v
+	slider.custom_minimum_size = Vector2(130, 0)
+	row.add_child(slider)
+
+	var val_lbl = Label.new()
+	val_lbl.text                 = fmt % default_v
+	val_lbl.custom_minimum_size  = Vector2(55, 0)
+	val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	row.add_child(val_lbl)
+
+	slider.value_changed.connect(func(v: float) -> void:
+		val_lbl.text = fmt % v
+		on_change.call(v))

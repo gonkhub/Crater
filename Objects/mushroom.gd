@@ -12,6 +12,17 @@ const IDLE_MAX = 4.0
 const STUCK_DIST     = 0.3   # metres
 const STUCK_INTERVAL = 2.5   # seconds
 
+## Light threshold below which the mushroom stays dormant.
+## get_light_at() returns 0.4–1.0 when the star is above the horizon
+## (lower on the far side of the crater, higher on the near side) and 0.0
+## when the star is below the horizon.  0.45 means mushrooms on the far
+## (dark) side stay still even during starlight; lower this toward 0.0 to
+## let them move anywhere as long as the star is up at all.
+const MIN_LIGHT_TO_MOVE: float = 0.45
+
+## How long to wait before rechecking light when dormant (seconds).
+const DORMANT_RECHECK: float = 2.5
+
 ## Sync rate: broadcast position every N physics ticks (~20 hz at 60 hz physics).
 const _RPC_INTERVAL: int = 3
 
@@ -92,10 +103,17 @@ func _physics_process(delta: float) -> void:
 			velocity.z = move_toward(velocity.z, 0.0, SPEED * 6.0 * delta)
 			_idle_timer -= delta
 			if _idle_timer <= 0.0:
-				_set_walking(_pick_waypoint())
+				if _is_lit():
+					_set_walking(_pick_waypoint())
+				else:
+					# Not enough light — stay dormant and recheck after a short delay.
+					_idle_timer = DORMANT_RECHECK
 
 		State.WALKING:
-			if nav_agent.is_navigation_finished():
+			if not _is_lit():
+				# Light dropped below threshold mid-journey — stop immediately and wait.
+				_set_idle(DORMANT_RECHECK)
+			elif nav_agent.is_navigation_finished():
 				_set_idle(randf_range(IDLE_MIN, IDLE_MAX))
 			else:
 				# ── Stuck detection ───────────────────────────────────────────
@@ -150,6 +168,12 @@ func _set_walking(target: Vector3) -> void:
 	_stuck_origin = global_position
 	_stuck_timer  = STUCK_INTERVAL
 	nav_agent.set_target_position(target)
+
+## Returns true when the light level at this mushroom's position is high enough
+## to warrant movement.  Queries TimeSystem which wraps SkyManager's per-position
+## light calculation (star direction × positional angle within the crater).
+func _is_lit() -> bool:
+	return TimeSystem.get_light_at(global_position) >= MIN_LIGHT_TO_MOVE
 
 # ── Waypoint selection ───────────────────────────────────────────────────────
 
