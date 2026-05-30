@@ -26,6 +26,10 @@ var _despawn_label: Label = null
 # ── FPS overlay ───────────────────────────────────────────────────────────────
 var _fps_label: Label = null
 
+# ── Dev panel drag state ──────────────────────────────────────────────────────
+var _dev_drag_active: bool    = false
+var _dev_drag_offset: Vector2 = Vector2.ZERO
+
 # ── Dev panel state ──────────────────────────────────────────────────────────
 var _tab_bar:     Control    = null   # button strip shown only in tab mode
 var _dev_panel:   Control    = null   # the floating dev tools window
@@ -110,8 +114,6 @@ func set_local_player(player: Node):
 func set_tab_mode(active: bool) -> void:
 	if _tab_bar:
 		_tab_bar.visible = active
-	if not active and _dev_panel:
-		_dev_panel.visible = false
 	if not active:
 		cancel_pending_spawn()
 		end_despawn_mode()
@@ -146,20 +148,43 @@ func _toggle_dev_panel() -> void:
 	if _dev_panel:
 		_dev_panel.visible = not _dev_panel.visible
 
+## Called by the header's gui_input; starts a drag from the mouse-down position.
+func _on_dev_header_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed and _dev_panel:
+			_dev_drag_active = true
+			_dev_drag_offset = _dev_panel.global_position - event.global_position
+			get_viewport().set_input_as_handled()
+		else:
+			_dev_drag_active = false
+
+## Global input handler: moves the panel while dragging, releases on mouse-up.
+## Using _input (not _unhandled_input) so release is caught even outside the header.
+func _input(event: InputEvent) -> void:
+	if not _dev_drag_active or _dev_panel == null:
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+		_dev_drag_active = false
+	elif event is InputEventMouseMotion:
+		var new_pos := event.global_position + _dev_drag_offset
+		var vs      := get_viewport().get_visible_rect().size
+		# Keep at least 80 px on-screen horizontally and the title bar always visible.
+		new_pos.x = clampf(new_pos.x, -(_dev_panel.size.x - 80.0), vs.x - 80.0)
+		new_pos.y = clampf(new_pos.y, 0.0, vs.y - 30.0)
+		_dev_panel.global_position = new_pos
+		get_viewport().set_input_as_handled()
+
 func _build_dev_panel() -> void:
 	if _dev_panel:
 		return
 
 	var panel = PanelContainer.new()
-	panel.visible       = false
-	panel.anchor_left   = 0.5
-	panel.anchor_right  = 0.5
-	panel.anchor_top    = 0.5
-	panel.anchor_bottom = 0.5
-	panel.offset_left   = -290.0
-	panel.offset_right  =  290.0
-	panel.offset_top    = -300.0
-	panel.offset_bottom =  300.0
+	panel.visible             = false
+	panel.anchor_left         = 0.0
+	panel.anchor_right        = 0.0
+	panel.anchor_top          = 0.0
+	panel.anchor_bottom       = 0.0
+	panel.custom_minimum_size = Vector2(580, 520)
 
 	var outer = VBoxContainer.new()
 	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -181,6 +206,12 @@ func _build_dev_panel() -> void:
 	close_btn.flat = true
 	close_btn.pressed.connect(func(): panel.visible = false)
 	header.add_child(close_btn)
+
+	# Drag: clicking and dragging the header moves the panel.
+	# Buttons in the header still consume their own events and are unaffected.
+	header.mouse_filter               = Control.MOUSE_FILTER_STOP
+	header.mouse_default_cursor_shape = Control.CURSOR_DRAG
+	header.gui_input.connect(_on_dev_header_input)
 
 	outer.add_child(HSeparator.new())
 
@@ -221,8 +252,7 @@ func _build_dev_panel() -> void:
 	despawn_sidebar_btn.alignment             = HORIZONTAL_ALIGNMENT_LEFT
 	despawn_sidebar_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	despawn_sidebar_btn.pressed.connect(func() -> void:
-		start_despawn_mode()
-		panel.visible = false)
+		start_despawn_mode())
 	sidebar.add_child(despawn_sidebar_btn)
 
 	_add_dev_section(sidebar, stack, "weather",  "Weather",  _build_weather_section)
@@ -230,6 +260,11 @@ func _build_dev_panel() -> void:
 	_activate_dev_section("player")
 
 	add_child(panel)
+	# Centre on first build; position is absolute and persists across show/hide.
+	var vs := get_viewport().get_visible_rect().size
+	panel.position = Vector2(
+		maxf((vs.x - 580.0) * 0.5, 10.0),
+		maxf((vs.y - 520.0) * 0.5, 50.0)).floor()
 	_dev_panel = panel
 
 ## Registers a named section: adds a sidebar button and builds its content.
@@ -266,7 +301,6 @@ func _build_spawn_section(vbox: VBoxContainer) -> void:
 
 func _on_spawn_btn_pressed(scene_path: String, display_name: String) -> void:
 	_pending_spawn = scene_path
-	_dev_panel.visible = false
 	_show_spawn_hint(display_name)
 
 func _show_spawn_hint(display_name: String) -> void:
