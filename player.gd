@@ -726,7 +726,7 @@ func dev_teleport_to_origin() -> void:
 func _noclip_fly(delta: float) -> void:
 	var dir := Vector3.ZERO
 	var input := Input.get_vector("left", "right", "up", "down")
-	dir += camera.global_transform.basis.z * -input.y
+	dir += camera.global_transform.basis.z *  input.y
 	dir += camera.global_transform.basis.x *  input.x
 	if Input.is_action_pressed("jump"):  dir.y += 1.0
 	if Input.is_action_pressed("slide"): dir.y -= 1.0
