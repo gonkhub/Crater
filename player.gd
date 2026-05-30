@@ -294,6 +294,7 @@ func _on_action_chosen(action: String, target: Node):
 				_tab_mode = false
 				if not (_hud and _hud.pause_overlay.visible):
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+				AudioManager.play_pickup()
 			elif target is CharacterBody3D and holdable:
 				_held_object = target
 				_held_object.add_collision_exception_with(self)
@@ -309,6 +310,7 @@ func _on_action_chosen(action: String, target: Node):
 				_tab_mode = false
 				if not (_hud and _hud.pause_overlay.visible):
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+				AudioManager.play_pickup()
 		"Info":
 			var interactable = _find_interactable(target)
 			if interactable and _hud:
@@ -366,6 +368,7 @@ func _drop_object():
 			_rpc_drop_object.rpc(str(_held_object.get_path()), _held_object.global_position, Vector3.ZERO, Vector3.ZERO)
 	if _held_interactable:
 		_held_interactable.is_held = false
+	AudioManager.play_drop()
 	_clear_hold_state()
 
 func _dispatch_held_input(input: String):
@@ -388,6 +391,7 @@ func _dispatch_held_input(input: String):
 func _start_punch():
 	if _punch_cooldown > 0.0:
 		return
+	AudioManager.play_punch_swing()
 	# Resolve per-object overrides: holdable > player default
 	var eff_cooldown:    float = _held_holdable.punch_cooldown if _held_holdable and _held_holdable.punch_cooldown > 0.0 else PUNCH_COOLDOWN
 	var eff_punch_dist:  float = _held_holdable.punch_distance if _held_holdable and _held_holdable.punch_distance > 0.0 else PUNCH_DISTANCE
@@ -409,6 +413,7 @@ func _start_punch():
 	var hit = get_world_3d().direct_space_state.intersect_ray(params)
 	if hit and hit.collider is RigidBody3D:
 		hit.collider.apply_central_impulse(punch_dir * eff_impulse)
+		AudioManager.play_punch_impact()
 		# Non-host clients: forward the impulse to the host so authoritative
 		# physics drives the result and it propagates to all peers via the broadcast.
 		if _is_peer_connected() and not multiplayer.is_server():
@@ -436,6 +441,7 @@ func _throw_object():
 			_rpc_drop_object.rpc(str(_held_object.get_path()), _held_object.global_position, Vector3.ZERO, Vector3.ZERO)
 	if _held_interactable:
 		_held_interactable.is_held = false
+	AudioManager.play_throw()
 	_clear_hold_state()
 
 func _place_queued_spawn() -> void:

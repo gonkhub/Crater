@@ -139,7 +139,10 @@ func _physics_process(delta: float) -> void:
 				var dir:  Vector3 = next - global_position
 				dir.y = 0.0
 				if dir.length_squared() > 0.001:
-					nav_agent.set_velocity(dir.normalized() * SPEED * speed_scale)
+					var dir_n := dir.normalized()
+					nav_agent.set_velocity(dir_n * SPEED * speed_scale)
+					# Face the direction of travel — lerp so turns are smooth.
+					rotation.y = lerp_angle(rotation.y, atan2(-dir_n.x, -dir_n.z), 6.0 * delta)
 				else:
 					nav_agent.set_velocity(Vector3.ZERO)
 

@@ -216,6 +216,39 @@ static func save_weight_physics(weight_idx: int, key: String, value: float) -> v
 	cfg.set_value("weight_%d" % weight_idx, key, value)
 	cfg.save(TUNE_SAVE_PATH)
 
+## Returns the compile-time default physics table (not the live/saved one).
+## Used by the HUD reset button to restore a weight class to factory values.
+static func get_default_physics() -> Array:
+	return [
+		{ "sway_mouse_scale": 0.010, "sway_damping": 0.30, "sway_spring_k": 14.0, "sway_max_speed":  8.0,
+		  "sway_sensitivity": 18.0,
+		  "roll_damping": 0.08, "max_roll_speed": 15.0,
+		  "punch_pull":  2.0, "punch_accel": 220.0, "punch_peak_hold": 0.06, "punch_settle_spd": 1.2,
+		  "punch_pushback":  6.0 },
+		{ "sway_mouse_scale": 0.006, "sway_damping": 0.40, "sway_spring_k": 10.0, "sway_max_speed":  5.5,
+		  "sway_sensitivity": 32.0,
+		  "roll_damping": 0.05, "max_roll_speed":  8.0,
+		  "punch_pull":  5.0, "punch_accel": 120.0, "punch_peak_hold": 0.12, "punch_settle_spd": 0.9,
+		  "punch_pushback": 14.0 },
+		{ "sway_mouse_scale": 0.003, "sway_damping": 0.60, "sway_spring_k":  6.0, "sway_max_speed":  3.5,
+		  "sway_sensitivity": 52.0,
+		  "roll_damping": 0.02, "max_roll_speed":  4.0,
+		  "punch_pull": 10.0, "punch_accel":  55.0, "punch_peak_hold": 0.20, "punch_settle_spd": 0.6,
+		  "punch_pushback": 28.0 },
+	]
+
+## Resets one weight class to factory defaults: updates the live table,
+## wipes the saved section, and returns the restored dict so the HUD can
+## refresh its sliders without a rebuild.
+static func reset_weight_physics(weight_idx: int) -> Dictionary:
+	var defaults := get_default_physics()
+	_WEIGHT_PHYSICS[weight_idx] = defaults[weight_idx].duplicate()
+	var cfg := ConfigFile.new()
+	cfg.load(TUNE_SAVE_PATH)
+	cfg.erase_section("weight_%d" % weight_idx)
+	cfg.save(TUNE_SAVE_PATH)
+	return _WEIGHT_PHYSICS[weight_idx]
+
 func _ready():
 	# Load global weight-class overrides once, before any per-object tune is applied.
 	if not _physics_loaded:

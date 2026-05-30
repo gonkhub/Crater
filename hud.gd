@@ -316,6 +316,9 @@ func _build_weight_settings(vbox: VBoxContainer) -> void:
 		group_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vbox.add_child(group_lbl)
 
+		# Collect slider+val_lbl pairs so the reset button can refresh them.
+		var slider_refs: Array = []
+
 		for param in _WEIGHT_PARAMS:
 			var row = HBoxContainer.new()
 			vbox.add_child(row)
@@ -327,10 +330,10 @@ func _build_weight_settings(vbox: VBoxContainer) -> void:
 			row.add_child(name_lbl)
 
 			var slider = HSlider.new()
-			slider.min_value          = param["min"]
-			slider.max_value          = param["max"]
-			slider.step               = param["step"]
-			slider.value              = Holdable._WEIGHT_PHYSICS[i].get(param["key"], 0.0)
+			slider.min_value           = param["min"]
+			slider.max_value           = param["max"]
+			slider.step                = param["step"]
+			slider.value               = Holdable._WEIGHT_PHYSICS[i].get(param["key"], 0.0)
 			slider.custom_minimum_size = Vector2(150, 0)
 			row.add_child(slider)
 
@@ -341,10 +344,30 @@ func _build_weight_settings(vbox: VBoxContainer) -> void:
 			row.add_child(val_lbl)
 
 			slider.value_changed.connect(_on_weight_setting_changed.bind(i, param["key"], val_lbl))
+			slider_refs.append({"slider": slider, "val_lbl": val_lbl, "key": param["key"]})
+
+		# Reset-to-defaults button for this weight class.
+		var reset_btn = Button.new()
+		reset_btn.text = "Reset %s to Defaults" % weight_names[i]
+		reset_btn.add_theme_color_override("font_color", Color(0.9, 0.5, 0.3))
+		vbox.add_child(reset_btn)
+		reset_btn.pressed.connect(_on_weight_reset.bind(i, slider_refs))
+
+		vbox.add_child(HSeparator.new())
 
 func _on_weight_setting_changed(value: float, weight_idx: int, key: String, val_lbl: Label) -> void:
 	Holdable.save_weight_physics(weight_idx, key, value)
 	val_lbl.text = str(value)
+
+func _on_weight_reset(weight_idx: int, slider_refs: Array) -> void:
+	var restored: Dictionary = Holdable.reset_weight_physics(weight_idx)
+	for ref in slider_refs:
+		var new_val: float = restored.get(ref["key"], 0.0)
+		# Block signal to avoid triggering save_weight_physics during the refresh.
+		ref["slider"].set_block_signals(true)
+		ref["slider"].value = new_val
+		ref["slider"].set_block_signals(false)
+		ref["val_lbl"].text = str(new_val)
 
 # ── Input handling ───────────────────────────────────────────────────────────
 
