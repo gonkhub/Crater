@@ -19,6 +19,7 @@ enum Weight { LIGHT, MEDIUM, HEAVY }
 #   punch_peak_hold   — seconds to dwell at max extension before settling
 #   punch_settle_spd  — retraction speed (m/s) from peak to M1-held position
 #   punch_pushback    — acceleration (m/s²) pushed back onto the player on collision
+#   punch_cooldown    — minimum seconds between consecutive M1 punches
 ## Static so all Holdable instances share one live table.
 static var _WEIGHT_PHYSICS = [
 	# LIGHT  — nimble, quick to respond, moderate spin persistence
@@ -26,19 +27,19 @@ static var _WEIGHT_PHYSICS = [
 	  "sway_sensitivity": 18.0,
 	  "roll_damping": 0.08, "max_roll_speed": 15.0,
 	  "punch_pull":  2.0, "punch_accel": 220.0, "punch_peak_hold": 0.06, "punch_settle_spd": 1.2,
-	  "punch_pushback":  6.0 },
+	  "punch_pushback":  6.0, "punch_cooldown": 0.35 },
 	# MEDIUM — heavier feel, more resistance to input, spin coasts longer
 	{ "sway_mouse_scale": 0.006, "sway_damping": 0.40, "sway_spring_k": 10.0, "sway_max_speed":  5.5,
 	  "sway_sensitivity": 32.0,
 	  "roll_damping": 0.05, "max_roll_speed":  8.0,
 	  "punch_pull":  5.0, "punch_accel": 120.0, "punch_peak_hold": 0.12, "punch_settle_spd": 0.9,
-	  "punch_pushback": 14.0 },
+	  "punch_pushback": 14.0, "punch_cooldown": 0.50 },
 	# HEAVY  — ponderous, hard to start moving, very persistent spin (flywheel)
 	{ "sway_mouse_scale": 0.003, "sway_damping": 0.60, "sway_spring_k":  6.0, "sway_max_speed":  3.5,
 	  "sway_sensitivity": 52.0,
 	  "roll_damping": 0.02, "max_roll_speed":  4.0,
 	  "punch_pull": 10.0, "punch_accel":  55.0, "punch_peak_hold": 0.20, "punch_settle_spd": 0.6,
-	  "punch_pushback": 28.0 },
+	  "punch_pushback": 28.0, "punch_cooldown": 0.65 },
 ]
 
 # ── Hold ────────────────────────────────────────────────────────────────────
@@ -130,22 +131,27 @@ func get_dynamics() -> Dictionary:
 	if override_max_roll_speed > 0.0: d["max_roll_speed"]   = override_max_roll_speed
 	return d
 
-## Returns the per-object tunable properties for the Tune popup.
-## Each entry must have "type": "dropdown" or "type": "number".
-##   dropdown — "prop", "label", "options": Array[String]
-##   number   — "prop", "label", "min", "max", "step"
+## Returns the per-object tunable properties for the Tune window.
+## Supported entry types:
+##   "dropdown" — "prop", "label", "options": Array[String]
+##   "number"   — "prop", "label", "min", "max", "step"
+##   "vector3"  — "prop", "label", "min", "max", "step"  (shows X / Y / Z spinboxes)
+##   "group"    — "label"  (section separator, no prop)
 ## Values of 0 for carry/punch fields inherit the player's global default.
-## Weight-class physics are tuned globally in the pause-menu settings panel.
+## Weight-class physics are tuned globally in the Dev → Hold window.
 func tune_schema() -> Array:
 	return [
-		{"type": "dropdown", "prop": "weight",        "label": "Weight Bucket",
+		{"type": "dropdown", "prop": "weight",         "label": "Weight Bucket",
 		 "options": ["Light", "Medium", "Heavy"]},
-		{"type": "number",   "prop": "carry_distance", "label": "Hold Point",         "min": 0.0,  "max": 20.0,  "step": 0.1},
-		{"type": "number",   "prop": "max_carry_dist", "label": "Max Carry Distance", "min": 0.0,  "max": 50.0,  "step": 0.5},
-		{"type": "number",   "prop": "throw_speed",    "label": "Throw Force",        "min": 0.0,  "max": 100.0, "step": 0.5},
-		{"type": "number",   "prop": "punch_impulse",  "label": "Punch Force",        "min": 0.0,  "max": 100.0, "step": 0.5},
-		{"type": "number",   "prop": "punch_cooldown", "label": "Punch Cooldown",     "min": 0.0,  "max": 10.0,  "step": 0.05},
-		{"type": "number",   "prop": "punch_distance", "label": "Punch Distance",     "min": 0.0,  "max": 20.0,  "step": 0.1},
+		{"type": "group",    "label": "Hold"},
+		{"type": "vector3",  "prop": "hold_rotation",  "label": "Rotation (°)",   "min": -180.0, "max": 180.0, "step": 1.0},
+		{"type": "number",   "prop": "hold_pivot",     "label": "Pivot Length",   "min": 0.0,    "max": 1.5,   "step": 0.05},
+		{"type": "number",   "prop": "carry_distance", "label": "Carry Distance", "min": 0.0,    "max": 5.0,   "step": 0.1},
+		{"type": "number",   "prop": "max_carry_dist", "label": "Max Tether",     "min": 0.0,    "max": 20.0,  "step": 0.5},
+		{"type": "group",    "label": "Combat"},
+		{"type": "number",   "prop": "punch_distance", "label": "Punch Distance", "min": 0.0,    "max": 8.0,   "step": 0.1},
+		{"type": "number",   "prop": "punch_impulse",  "label": "Punch Force",    "min": 0.0,    "max": 50.0,  "step": 1.0},
+		{"type": "number",   "prop": "throw_speed",    "label": "Throw Speed",    "min": 0.0,    "max": 50.0,  "step": 1.0},
 	]
 
 # ── Persistent tune save / load ──────────────────────────────────────────────
@@ -177,18 +183,24 @@ func _apply_saved_tune() -> void:
 		if cfg.has_section_key(key, prop):
 			set(prop, cfg.get_value(key, prop))
 
-## Called by hud.gd when the player changes a field in the Tune popup.
-## Accepts any value type (float for number fields, int for dropdown index).
+## Called by hud.gd when the player changes a field in the Tune window.
+## Saves the value to disk, then propagates it live to every Holdable in the
+## scene tree that shares the same scene file (so all mushrooms update together,
+## not just the one that was clicked).
 func save_tune_value(prop: String, value) -> void:
 	var key: String = _save_key()
 	if key.is_empty():
+		# Unsaved scene (e.g. a placed-but-not-saved object): update self only.
 		set(prop, value)
 		return
 	var cfg := ConfigFile.new()
 	cfg.load(TUNE_SAVE_PATH)   # silently ignored if file doesn't exist yet
 	cfg.set_value(key, prop, value)
 	cfg.save(TUNE_SAVE_PATH)
-	set(prop, value)
+	# Push the live value to all instances sharing this scene path.
+	for h in get_tree().get_nodes_in_group("holdables"):
+		if (h as Holdable)._save_key() == key:
+			h.set(prop, value)
 
 # ── Weight-class physics persistence ────────────────────────────────────────
 
@@ -224,17 +236,17 @@ static func get_default_physics() -> Array:
 		  "sway_sensitivity": 18.0,
 		  "roll_damping": 0.08, "max_roll_speed": 15.0,
 		  "punch_pull":  2.0, "punch_accel": 220.0, "punch_peak_hold": 0.06, "punch_settle_spd": 1.2,
-		  "punch_pushback":  6.0 },
+		  "punch_pushback":  6.0, "punch_cooldown": 0.35 },
 		{ "sway_mouse_scale": 0.006, "sway_damping": 0.40, "sway_spring_k": 10.0, "sway_max_speed":  5.5,
 		  "sway_sensitivity": 32.0,
 		  "roll_damping": 0.05, "max_roll_speed":  8.0,
 		  "punch_pull":  5.0, "punch_accel": 120.0, "punch_peak_hold": 0.12, "punch_settle_spd": 0.9,
-		  "punch_pushback": 14.0 },
+		  "punch_pushback": 14.0, "punch_cooldown": 0.50 },
 		{ "sway_mouse_scale": 0.003, "sway_damping": 0.60, "sway_spring_k":  6.0, "sway_max_speed":  3.5,
 		  "sway_sensitivity": 52.0,
 		  "roll_damping": 0.02, "max_roll_speed":  4.0,
 		  "punch_pull": 10.0, "punch_accel":  55.0, "punch_peak_hold": 0.20, "punch_settle_spd": 0.6,
-		  "punch_pushback": 28.0 },
+		  "punch_pushback": 28.0, "punch_cooldown": 0.65 },
 	]
 
 ## Resets one weight class to factory defaults: updates the live table,
@@ -250,6 +262,7 @@ static func reset_weight_physics(weight_idx: int) -> Dictionary:
 	return _WEIGHT_PHYSICS[weight_idx]
 
 func _ready():
+	add_to_group("holdables")
 	# Load global weight-class overrides once, before any per-object tune is applied.
 	if not _physics_loaded:
 		_physics_loaded = true

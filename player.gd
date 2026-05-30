@@ -51,6 +51,7 @@ var _punch_measuring:   bool   = false
 var _punch_peak_speed:  float  = 0.0
 var _punch_target_name: String = ""
 var _lunge_active:      bool   = false # true only when punch fully extended AND w_pull > 0
+var _lunge_locked:      bool   = false # true after a lunge fires; cleared when object fully returns
 
 var _hud: Node = null
 
@@ -190,12 +191,12 @@ func _unhandled_input(event):
 				_place_queued_spawn()
 			elif _hud and _hud.is_despawn_mode():
 				_execute_despawn_at_cursor()
+			elif _hud and _hud.is_tune_mode():
+				_execute_tune_at_cursor()
 			elif _hud and _hud.is_action_menu_visible():
 				_hud.hide_action_menu()
 			elif _hud and _hud.is_info_popup_visible():
 				_hud.hide_info_popup()
-			elif _hud and _hud.is_tune_popup_visible():
-				_hud.hide_tune_popup()
 			elif _held_object:
 				_drop_object()
 			else:
@@ -328,10 +329,6 @@ func _on_action_chosen(action: String, target: Node):
 			var interactable = _find_interactable(target)
 			if interactable and _hud:
 				_hud.show_info_popup(interactable, target)
-		"Tune":
-			var holdable = _find_holdable(target)
-			if holdable and _hud:
-				_hud.show_tune_popup(target)
 		_:
 			var interactable = _find_interactable(target)
 			if interactable:
@@ -354,6 +351,7 @@ func _clear_hold_state():
 	_punch_cooldown     = 0.0
 	_punch_measuring    = false
 	_lunge_active       = false
+	_lunge_locked       = false
 	_sway_angle         = -PI / 2.0
 	_sway_ang_vel       = 0.0
 	_sway_target        = -PI / 2.0
@@ -404,15 +402,10 @@ func _dispatch_held_input(input: String):
 func _start_punch():
 	if _punch_cooldown > 0.0:
 		return
-	# Lunge lock: for objects with punch_pull > 0, block re-punch until the
-	# object has fully returned to its carry position after the previous lunge.
-	if _held_holdable:
-		var pull: float = _held_holdable.get_dynamics().get("punch_pull", 0.0)
-		if pull > 0.0 and (_punch_offset > 0.001 or _punch_returning):
-			return
 	AudioManager.play_punch_swing()
-	# Resolve per-object overrides: holdable > player default
-	var eff_cooldown:    float = _held_holdable.punch_cooldown if _held_holdable and _held_holdable.punch_cooldown > 0.0 else PUNCH_COOLDOWN
+	# Resolve per-object overrides: holdable export > weight bucket > player default
+	var dyn: Dictionary  = _held_holdable.get_dynamics() if _held_holdable else {}
+	var eff_cooldown:    float = _held_holdable.punch_cooldown if _held_holdable and _held_holdable.punch_cooldown > 0.0 else dyn.get("punch_cooldown", PUNCH_COOLDOWN)
 	var eff_punch_dist:  float = _held_holdable.punch_distance if _held_holdable and _held_holdable.punch_distance > 0.0 else PUNCH_DISTANCE
 	var eff_carry_dist:  float = _held_holdable.carry_distance if _held_holdable and _held_holdable.carry_distance > 0.0 else CARRY_DISTANCE
 	var eff_impulse:     float = _held_holdable.punch_impulse  if _held_holdable and _held_holdable.punch_impulse  > 0.0 else PUNCH_IMPULSE
@@ -530,7 +523,9 @@ func _update_held_object(delta: float):
 				var fwd: Vector3        = -camera.global_transform.basis.z
 				var forward_dist: float = (_held_object.global_position - camera.global_position).dot(fwd)
 				var intended_fwd: float = eff_carry_dist + eff_punch_dist - pivot
-				_lunge_active  = (w_pull > 0.0) and (forward_dist >= intended_fwd * 0.85)
+				_lunge_active  = (w_pull > 0.0) and (forward_dist >= intended_fwd * 0.85) and not _lunge_locked
+				if _lunge_active:
+					_lunge_locked = true
 				_punch_peaked  = true
 				_punch_hold_timer = w_peak_hold
 		elif _punch_hold_timer > 0.0:
@@ -568,6 +563,9 @@ func _update_held_object(delta: float):
 		_punch_hold_timer = 0.0
 		_punch_vel        = 0.0
 		_punch_offset     = move_toward(_punch_offset, 0.0, PUNCH_RETURN_SPEED * delta)
+		# Object is back at neutral — unlock lunge for the next punch.
+		if _punch_offset <= 0.001:
+			_lunge_locked = false
 
 	# ── Sway + roll (two independent angular degrees of freedom) ────────────
 	# _sway_angle — position of close end on the sway circle.
@@ -742,6 +740,25 @@ func _noclip_fly(delta: float) -> void:
 	if Input.is_action_pressed("slide"): dir.y -= 1.0
 	if dir.length_squared() > 0.0:
 		global_position += dir.normalized() * SPEED * 3.0 * delta
+
+## Fires a raycast from the cursor and opens the tune window for the first holdable hit.
+func _execute_tune_at_cursor() -> void:
+	var mouse_pos := get_viewport().get_mouse_position()
+	var origin    := camera.project_ray_origin(mouse_pos)
+	var ray_end: Vector3 = origin + camera.project_ray_normal(mouse_pos) * INTERACT_RANGE
+	var params    := PhysicsRayQueryParameters3D.create(origin, ray_end)
+	params.exclude = [get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(params)
+	if not hit:
+		return
+	var target: Node = hit.collider
+	# Walk up to a root-level physics body.
+	while target and not (target is RigidBody3D or target is CharacterBody3D):
+		target = target.get_parent()
+	if not target:
+		return
+	if _hud:
+		_hud.open_tune_for(target)
 
 ## Fires a raycast from the cursor and despawns the first physics body hit.
 func _execute_despawn_at_cursor() -> void:

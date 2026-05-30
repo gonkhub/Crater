@@ -12,8 +12,6 @@ signal action_chosen(action: String, target: Node)
 var _action_target:  Node     = null
 var _local_player:   Node     = null
 var _info_popup:     Control  = null
-var _tune_popup:     Control  = null
-var _tune_holdable:  Holdable = null
 
 # ── Spawn mode ───────────────────────────────────────────────────────────────
 var _pending_spawn: String = ""   # scene path queued for placement; "" = inactive
@@ -22,6 +20,10 @@ var _spawn_label:   Label  = null
 # ── Despawn mode ─────────────────────────────────────────────────────────────
 var _despawn_mode:  bool  = false
 var _despawn_label: Label = null
+
+# ── Tune mode ────────────────────────────────────────────────────────────────
+var _tune_mode:  bool  = false
+var _tune_label: Label = null
 
 # ── FPS overlay ───────────────────────────────────────────────────────────────
 var _fps_label: Label = null
@@ -71,6 +73,7 @@ const _HOLD_PUNCH_PARAMS = [
 	{"key": "punch_peak_hold",   "label": "Peak Hold (s)",  "min": 0.0,   "max": 1.0,   "step": 0.01},
 	{"key": "punch_settle_spd",  "label": "Settle Speed",   "min": 0.0,   "max": 5.0,   "step": 0.1},
 	{"key": "punch_pushback",    "label": "Pushback",       "min": 0.0,   "max": 60.0,  "step": 1.0},
+	{"key": "punch_cooldown",    "label": "M1 Cooldown (s)","min": 0.0,   "max": 2.0,   "step": 0.05},
 ]
 
 # ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -126,6 +129,7 @@ func set_tab_mode(active: bool) -> void:
 			_dev_windows[id].visible = false
 		cancel_pending_spawn()
 		end_despawn_mode()
+		end_tune_mode()
 
 # ── Dev sidebar ──────────────────────────────────────────────────────────────
 
@@ -205,6 +209,14 @@ func _build_dev_sidebar() -> void:
 	_add_dev_section(buttons, "hold",     "Hold",     _build_hold_section)
 	_add_dev_section(buttons, "spawn",    "Spawn",    _build_spawn_section)
 
+	# Tune: direct action, enters click-to-tune mode (no window on press).
+	var tune_btn = Button.new()
+	tune_btn.text      = "Tune"
+	tune_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	tune_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tune_btn.pressed.connect(func() -> void: start_tune_mode())
+	buttons.add_child(tune_btn)
+
 	# Despawn: direct action, no window.
 	var despawn_btn = Button.new()
 	despawn_btn.text      = "Despawn"
@@ -283,6 +295,9 @@ func _toggle_dev_window(id: String, label: String, builder: Callable) -> void:
 	# First open: build, register, position next to the sidebar.
 	var win := _create_dev_window(label, builder)
 	add_child(win)
+	# Second sweep: catches runtime-created internals (e.g. SpinBox's LineEdit)
+	# that only exist after _ready() fires when the node enters the scene tree.
+	_disable_focus_recursive(win)
 	var sx: float  = _dev_sidebar.global_position.x if _dev_sidebar else 100.0
 	var sy: float  = _dev_sidebar.global_position.y if _dev_sidebar else 50.0
 	var off: float = float(_dev_windows.size()) * 28.0
@@ -290,12 +305,14 @@ func _toggle_dev_window(id: String, label: String, builder: Callable) -> void:
 	_dev_windows[id]  = win
 	_dev_win_open[id] = true
 
-## Recursively disables keyboard focus on every Control in a subtree.
-## Call once after a panel is fully built to prevent Tab-key traversal.
+## Recursively disables keyboard focus on every Control in a subtree,
+## including the root node itself. Safe to call multiple times — call once
+## before add_child (catches statically built controls) and once after
+## (catches runtime-created internals like SpinBox's LineEdit).
 func _disable_focus_recursive(node: Node) -> void:
+	if node is Control:
+		(node as Control).focus_mode = Control.FOCUS_NONE
 	for child in node.get_children():
-		if child is Control:
-			(child as Control).focus_mode = Control.FOCUS_NONE
 		_disable_focus_recursive(child)
 
 ## Adds a sidebar button that lazily creates and toggles its floating window.
@@ -614,18 +631,18 @@ func _on_hold_reset(weight_idx: int, ctrl_refs: Array) -> void:
 
 func _unhandled_input(event):
 	if event.is_action_pressed("ui_cancel"):
-		if _tune_popup != null:
-			hide_tune_popup()
-			return
 		if _info_popup != null:
 			hide_info_popup()
 			return
-		# Cancel active spawn or despawn mode before reaching the dev panel / pause toggle.
+		# Cancel active modes before reaching the dev panel / pause toggle.
 		if not _pending_spawn.is_empty():
 			cancel_pending_spawn()
 			return
 		if _despawn_mode:
 			end_despawn_mode()
+			return
+		if _tune_mode:
+			end_tune_mode()
 			return
 		# Close open section windows before reaching the pause toggle.
 		var any_closed := false
@@ -672,7 +689,6 @@ func hide_hover_label():
 
 func show_action_menu(screen_pos: Vector2, target: Node, display_name: String, actions: Array[String]):
 	hide_info_popup()
-	hide_tune_popup()
 	_action_target = target
 	action_name_label.text = display_name
 	for child in action_buttons.get_children():
@@ -783,127 +799,174 @@ func hide_info_popup() -> void:
 func is_info_popup_visible() -> bool:
 	return _info_popup != null
 
-# ── Tune popup ───────────────────────────────────────────────────────────────
+# ── Tune mode ────────────────────────────────────────────────────────────────
 
-func show_tune_popup(target: Node) -> void:
-	hide_tune_popup()
+func start_tune_mode() -> void:
+	_tune_mode = true
+	if _tune_label == null:
+		_tune_label = Label.new()
+		_tune_label.anchor_left   = 0.5
+		_tune_label.anchor_right  = 0.5
+		_tune_label.anchor_top    = 0.0
+		_tune_label.anchor_bottom = 0.0
+		_tune_label.offset_left   = -300.0
+		_tune_label.offset_right  =  300.0
+		_tune_label.offset_top    = 10.0
+		_tune_label.offset_bottom = 34.0
+		_tune_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_tune_label.mouse_filter  = Control.MOUSE_FILTER_IGNORE
+		_tune_label.add_theme_color_override("font_color", Color(0.4, 0.9, 1.0))
+		add_child(_tune_label)
+	_tune_label.text    = "TUNE MODE  ·  Click an object to open its tune panel  ·  Esc to exit"
+	_tune_label.visible = true
 
+func end_tune_mode() -> void:
+	_tune_mode = false
+	if _tune_label:
+		_tune_label.visible = false
+
+func is_tune_mode() -> bool:
+	return _tune_mode
+
+## Opens (or brings to front) a draggable tune window for the clicked object.
+## Windows are keyed by scene file path so all instances of the same scene
+## share one window. The window persists across Tab cycles like other dev windows.
+func open_tune_for(target: Node) -> void:
 	var holdable: Holdable = null
-	var interactable: Interactable = null
 	for child in target.get_children():
-		if child is Holdable:       holdable = child
-		elif child is Interactable: interactable = child
+		if child is Holdable:
+			holdable = child
+			break
 	if not holdable:
 		return
-	_tune_holdable = holdable
 
-	var popup = PanelContainer.new()
-	popup.anchor_left   = 0.5
-	popup.anchor_right  = 0.5
-	popup.anchor_top    = 0.5
-	popup.anchor_bottom = 0.5
-	popup.offset_left   = -200.0
-	popup.offset_right  =  200.0
-	popup.offset_top    = -200.0
-	popup.offset_bottom =  200.0
+	# Stable key: scene path, or fall back to node name for unsaved objects.
+	var scene_path: String = target.scene_file_path
+	var win_id: String     = "tune:" + (scene_path if not scene_path.is_empty() else target.name)
 
-	var vbox = VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 6)
-	popup.add_child(vbox)
+	if _dev_windows.has(win_id):
+		var existing: Control = _dev_windows[win_id]
+		existing.visible = true
+		existing.move_to_front()
+		return
 
-	var header = HBoxContainer.new()
-	vbox.add_child(header)
+	var display_name: String = (
+		scene_path.get_file().get_basename() if not scene_path.is_empty() else target.name
+	)
 
-	var name_lbl = Label.new()
-	name_lbl.text = interactable.display_name if interactable else target.name
-	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	name_lbl.add_theme_font_size_override("font_size", 18)
-	header.add_child(name_lbl)
+	var win := _create_dev_window(
+		"Tune · " + display_name,
+		func(c: VBoxContainer) -> void: _build_tune_content(c, holdable)
+	)
+	add_child(win)
+	_disable_focus_recursive(win)
 
-	var tag_lbl = Label.new()
-	tag_lbl.text = "tune"
-	tag_lbl.horizontal_alignment  = HORIZONTAL_ALIGNMENT_RIGHT
-	tag_lbl.vertical_alignment    = VERTICAL_ALIGNMENT_CENTER
-	tag_lbl.size_flags_horizontal = Control.SIZE_SHRINK_END
-	tag_lbl.add_theme_font_size_override("font_size", 11)
-	tag_lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.60))
-	tag_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	header.add_child(tag_lbl)
+	var vs:  Vector2 = get_viewport().get_visible_rect().size
+	var off: float   = float(_dev_windows.size()) * 24.0
+	win.position = Vector2(
+		clampf(vs.x * 0.5 - 200.0 + off, 10.0, vs.x - 420.0),
+		clampf(vs.y * 0.3  + off,         10.0, vs.y - 300.0)
+	).floor()
 
-	vbox.add_child(HSeparator.new())
+	_dev_windows[win_id]  = win
+	_dev_win_open[win_id] = true
 
-	var scroll = ScrollContainer.new()
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.size_flags_vertical    = Control.SIZE_EXPAND_FILL
-	vbox.add_child(scroll)
-
-	var content_vbox = VBoxContainer.new()
-	content_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	content_vbox.add_theme_constant_override("separation", 6)
-	scroll.add_child(content_vbox)
-
+## Builds the tune window content from the holdable's tune_schema().
+## Supports entry types: "group", "dropdown", "number", "vector3".
+func _build_tune_content(content: VBoxContainer, holdable: Holdable) -> void:
 	for entry in holdable.tune_schema():
-		var row = HBoxContainer.new()
-		row.add_theme_constant_override("separation", 8)
-		content_vbox.add_child(row)
-
-		var lbl = Label.new()
-		lbl.text = entry["label"]
-		lbl.custom_minimum_size = Vector2(140, 0)
-		lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		row.add_child(lbl)
-
 		match entry.get("type", ""):
+			"group":
+				content.add_child(HSeparator.new())
+				var grp_lbl = Label.new()
+				grp_lbl.text = entry.get("label", "")
+				grp_lbl.add_theme_font_size_override("font_size", 11)
+				grp_lbl.add_theme_color_override("font_color", Color(0.45, 0.85, 1.0))
+				content.add_child(grp_lbl)
 			"dropdown":
+				var row = HBoxContainer.new()
+				row.add_theme_constant_override("separation", 8)
+				content.add_child(row)
+				var lbl = Label.new()
+				lbl.text = entry["label"]
+				lbl.custom_minimum_size = Vector2(120, 0)
+				lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+				row.add_child(lbl)
 				var opt = OptionButton.new()
 				for option in entry["options"]:
 					opt.add_item(option)
 				opt.selected = int(holdable.get(entry["prop"]))
 				opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 				row.add_child(opt)
-				opt.item_selected.connect(_on_tune_dropdown_changed.bind(entry["prop"], holdable))
+				var d_prop: String = entry["prop"]
+				opt.item_selected.connect(func(idx: int) -> void:
+					if is_instance_valid(holdable):
+						holdable.save_tune_value(d_prop, idx)
+				)
 			"number":
+				var row = HBoxContainer.new()
+				row.add_theme_constant_override("separation", 8)
+				content.add_child(row)
+				var lbl = Label.new()
+				lbl.text = entry["label"]
+				lbl.custom_minimum_size = Vector2(120, 0)
+				lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+				row.add_child(lbl)
 				var spin = SpinBox.new()
-				spin.min_value     = entry["min"]
-				spin.max_value     = entry["max"]
-				spin.step          = entry["step"]
-				spin.value         = holdable.get(entry["prop"])
+				spin.min_value    = entry["min"]
+				spin.max_value    = entry["max"]
+				spin.step         = entry["step"]
+				spin.value        = holdable.get(entry["prop"])
 				spin.allow_greater = true
 				spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 				row.add_child(spin)
-				spin.value_changed.connect(_on_tune_number_changed.bind(entry["prop"], holdable))
-
-	vbox.add_child(HSeparator.new())
-
-	var btn_row = HBoxContainer.new()
-	vbox.add_child(btn_row)
-	var spacer = Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	btn_row.add_child(spacer)
-	var close_btn = Button.new()
-	close_btn.text = "Close"
-	close_btn.pressed.connect(hide_tune_popup)
-	btn_row.add_child(close_btn)
-
-	add_child(popup)
-	_tune_popup = popup
-
-func hide_tune_popup() -> void:
-	if _tune_popup:
-		_tune_popup.queue_free()
-		_tune_popup = null
-	_tune_holdable = null
-
-func is_tune_popup_visible() -> bool:
-	return _tune_popup != null
-
-func _on_tune_number_changed(value: float, prop: String, holdable: Holdable) -> void:
-	if is_instance_valid(holdable):
-		holdable.save_tune_value(prop, value)
-
-func _on_tune_dropdown_changed(index: int, prop: String, holdable: Holdable) -> void:
-	if is_instance_valid(holdable):
-		holdable.save_tune_value(prop, index)
+				var n_prop: String = entry["prop"]
+				spin.value_changed.connect(func(val: float) -> void:
+					if is_instance_valid(holdable):
+						holdable.save_tune_value(n_prop, val)
+				)
+			"vector3":
+				# One sub-label above three axis spinboxes.
+				var field_box = VBoxContainer.new()
+				field_box.add_theme_constant_override("separation", 2)
+				content.add_child(field_box)
+				var field_lbl = Label.new()
+				field_lbl.text = entry["label"]
+				field_lbl.add_theme_font_size_override("font_size", 11)
+				field_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+				field_box.add_child(field_lbl)
+				var axes_row = HBoxContainer.new()
+				axes_row.add_theme_constant_override("separation", 4)
+				field_box.add_child(axes_row)
+				var current_v3: Vector3 = holdable.get(entry["prop"])
+				var initial: Array      = [current_v3.x, current_v3.y, current_v3.z]
+				var axis_spins: Array   = []
+				for axis_i in range(3):
+					var ax_lbl = Label.new()
+					ax_lbl.text = ["X", "Y", "Z"][axis_i]
+					ax_lbl.custom_minimum_size = Vector2(14, 0)
+					ax_lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+					axes_row.add_child(ax_lbl)
+					var ax_spin = SpinBox.new()
+					ax_spin.min_value    = entry["min"]
+					ax_spin.max_value    = entry["max"]
+					ax_spin.step         = entry["step"]
+					ax_spin.allow_greater = true
+					ax_spin.allow_lesser  = true
+					ax_spin.value        = initial[axis_i]
+					ax_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+					axes_row.add_child(ax_spin)
+					axis_spins.append(ax_spin)
+				var v3_prop: String = entry["prop"]
+				for ax_spin in axis_spins:
+					ax_spin.value_changed.connect(func(_v: float) -> void:
+						if is_instance_valid(holdable):
+							holdable.save_tune_value(v3_prop, Vector3(
+								axis_spins[0].value,
+								axis_spins[1].value,
+								axis_spins[2].value
+							))
+					)
 
 # ── Per-frame update (weather readout) ───────────────────────────────────────
 
