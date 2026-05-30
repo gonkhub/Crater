@@ -8,23 +8,22 @@ You are working on **Crater**, a Godot 4.3 (Forward+) multiplayer game. Read thi
 
 This is a **collaborative code-building exercise between agent and user.** The division of responsibility is absolute:
 
-- **The user makes all design decisions.** Do not invent features, change behaviour, or make aesthetic choices unless explicitly asked. If the user says "add a sound effect," implement that exactly — do not also rewrite the audio bus routing, adjust existing volumes, or refactor surrounding code because it seemed like a good idea.
-- **The agent's job is accurate execution of the user's vision.** When a request is ambiguous, ask a focused clarifying question rather than guessing and building.
-- **Explicit invariants do not imply freedom elsewhere.** The fact that specific systems are documented as protected does not mean undocumented systems are open to unsolicited change. Treat every system as protected unless the user explicitly asks you to touch it.
-- **Scope is always the minimum necessary.** Implement what was asked. Note adjacent improvements you noticed, but do not apply them unilaterally. If you spot something clearly broken in code you're reading, flag it — don't fix it silently.
+- **The user makes all design decisions.** Do not invent features, change behaviour, or make aesthetic choices unless explicitly asked. Always research the most effective way to implement a request. The most important factors are efficacy of gameplay and optimization of performance. Always pitch solutions to the user for approval before execution. If the user says "add a sound effect," implement that exactly — do not also rewrite the audio bus routing, adjust existing volumes, or refactor surrounding code because it seemed like a good idea. If it does seem like a good idea, pitch it with pros and cons and defer to user judgement.
+- **The agent's job is accurate execution of the user's vision.** When a request is ambiguous, ask a focused clarifying question rather than guessing and building. You are encouraged to ask for gameplay testing feedback. For example, after implementation of a feature, you may ask about that feature's behavior in-engine when it becomes relevant.
+- **Explicit invariants do not imply freedom elsewhere.** The fact that specific systems are documented as protected does not mean undocumented systems are open to unsolicited change. Treat every system as protected unless the user explicitly asks you to touch it. However, you are encouraged to ask for approval.
 - **Be concise.** Short answers, no fluff. Efficient communication saves tokens and keeps the session focused.
 
 ---
 
 ## Identity & Tone
 
-Crater is a **lighthearted multiplayer environment sim** with emergent physics. The tone is curiosity, momentum, and physical comedy — not survival, not horror. The alien setting is scientifically grounded but the gameplay is chaotic and fun. When in doubt on a design decision, lean toward "more emergent chaos" over "more structured systems."
+Crater is a **lighthearted multiplayer environment sim** with emergent physics. The tone is curiosity, momentum, and physical comedy — not survival, not horror. The alien setting is scientifically grounded but the gameplay is chaotic and fun. When in doubt on a design decision, lean toward "more emergent chaos" over "more structured systems." The purpose of the game is to encourage the player to play an active role in an ecosystem with emergent behaviors arising from the cause-and-effect relationship between objects, npc creatures, the player, and weather systems. These four actors are the factors which shape a "run"
 
 ---
 
 ## World & Setting
 
-The game takes place inside a crater system on the south pole of an exoplanet in extremely close orbit around a red dwarf star. Direct starlight is lethal; the poles are the only refuge. Cold air and water pool in the craters. At the crater rim, cold air meets superheated atmosphere, forming thick convective cloud cover that diffuses the star's light down into the crater. Life here depends on geothermal activity and sparse diffused starlight.
+The game takes place inside a crater system on the south pole of an exoplanet in extremely close orbit around a red dwarf star. Direct starlight is lethal; the poles are the only refuge. Cold air sinks into the craters and caves where condensation of water and deposits of other natural resources lie. At the crater rim, cold air meets superheated atmosphere, forming thick convective cloud cover that diffuses the star's light down into the crater. Life here depends on geothermal activity and sparse diffused starlight.
 
 **This setting governs all aesthetic decisions:**
 - The star is always near-horizon — it never reaches zenith. Elevation is capped at ±8°. The visual result is an eternal near-horizon raking light, not an overhead sun.
