@@ -14,6 +14,10 @@ var _bcast_tick:  int        = 0
 var _was_moving:  Dictionary = {}   # path → bool: one trailing frame after stop
 var _net_targets: Dictionary = {}   # path → {pos, rot, lin_vel, ang_vel}
 
+# ── Dynamic object spawning ──────────────────────────────────────────────────
+var _spawn_counter:   int   = 0
+var _spawned_objects: Array = []   # [{scene, name}] — used for late-join sync
+
 func _ready():
 	hud = preload("res://hud.tscn").instantiate()
 	add_child(hud)
@@ -21,18 +25,18 @@ func _ready():
 	# Generate trimesh collision for the cave at runtime.
 	# The GLB scene importer ignores _subresources physics flags;
 	# create_trimesh_collision() is the reliable alternative.
-	_generate_mesh_collision($"NavigationRegion3D/Cave Enterway GLB")
+	_build_mesh_colliders($"NavigationRegion3D/Cave Enterway GLB")
 
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 
 	if not multiplayer.has_multiplayer_peer():
-		_do_spawn(1)
+		_instantiate_player(1)
 		return
 
 	if multiplayer.is_server():
-		_do_spawn(1)
+		_instantiate_player(1)
 	else:
-		_client_ready.rpc_id(1)
+		_on_client_connected.rpc_id(1)
 
 # ── Server: broadcast moving objects at ~20 hz ─────────────────────────────
 
@@ -57,12 +61,12 @@ func _physics_process(_delta: float) -> void:
 			states.append([path, node.global_position,
 				node.global_transform.basis.get_rotation_quaternion(), lv, av])
 	if not states.is_empty():
-		_recv_world_physics.rpc(states)
+		_rpc_recv_physics.rpc(states)
 
 # ── Client: receive host physics broadcast ──────────────────────────────────
 
 @rpc("authority", "unreliable_ordered")
-func _recv_world_physics(states: Array) -> void:
+func _rpc_recv_physics(states: Array) -> void:
 	for s in states:
 		_net_targets[s[0]] = {
 			"pos":     s[1],
@@ -72,7 +76,7 @@ func _recv_world_physics(states: Array) -> void:
 		}
 
 ## Injects a net-target so a held object smoothly tracks its holder even
-## while its RigidBody physics is frozen. Called by player.gd _sync_held_object.
+## while its RigidBody physics is frozen. Called by player.gd _rpc_held_xform.
 func queue_net_target(path: String, pos: Vector3, rot: Quaternion) -> void:
 	_net_targets[path] = {
 		"pos":     pos,
@@ -83,7 +87,7 @@ func queue_net_target(path: String, pos: Vector3, rot: Quaternion) -> void:
 
 # ── All peers: lerp world objects toward their net targets ──────────────────
 # Server applies lerp only for FROZEN (held) objects — it gets those via
-# queue_net_target() from _sync_held_object RPCs sent by holding clients.
+# queue_net_target() from _rpc_held_xform RPCs sent by holding clients.
 # Unfrozen objects on the server are physics-authoritative, so we skip them.
 # Clients lerp everything: frozen objects (held) + free objects (broadcast).
 
@@ -102,9 +106,6 @@ func _process(delta: float) -> void:
 		var dist: float = obj.global_position.distance_to(tgt["pos"])
 		if dist > 1.5:
 			# Major desync (>1.5 m): snap instantly.
-			# Threshold raised from 0.5 m — at 15 m/s throw speed and 20 hz
-			# broadcast, in-flight objects can legitimately be 0.75 m ahead of
-			# the last packet, so 0.5 m caused false teleport-snaps.
 			obj.global_position = tgt["pos"]
 			obj.global_transform.basis = Basis(tgt["rot"])
 		else:
@@ -114,26 +115,33 @@ func _process(delta: float) -> void:
 
 # ── Peer connection ─────────────────────────────────────────────────────────
 
+## Client calls this on the server when it has loaded and is ready to join.
 @rpc("any_peer", "reliable")
-func _client_ready():
+func _on_client_connected():
 	var id = multiplayer.get_remote_sender_id()
-	_do_spawn(id)
-	_remote_spawn.rpc(id)
+	_instantiate_player(id)
+	_rpc_spawn_player.rpc(id)
 	var children = $Players.get_children()
 	for child in children:
 		var existing_id = str(child.name).to_int()
 		if existing_id != id:
-			_remote_spawn.rpc_id(id, existing_id)
-	_send_world_state_to(id)
+			_rpc_spawn_player.rpc_id(id, existing_id)
+	# Bring the new peer up to date on any objects spawned after scene load.
+	for entry in _spawned_objects:
+		var obj: Node = get_node_or_null(entry["name"])
+		if obj and is_instance_valid(obj):
+			_rpc_recv_spawn.rpc_id(id, entry["scene"], obj.global_transform, entry["name"])
+	_sync_world_to_peer(id)
 	hud.add_log("Player %d joined." % id)
 	_broadcast_log.rpc("Player %d joined." % id)
 
+## Received by all peers — instantiates the player with the given authority id.
 @rpc("any_peer", "reliable")
-func _remote_spawn(id: int):
-	_do_spawn(id)
+func _rpc_spawn_player(id: int):
+	_instantiate_player(id)
 
 func _on_peer_disconnected(id: int):
-	_do_remove(id)
+	_remove_player(id)
 	if multiplayer.is_server():
 		hud.add_log("Player %d left." % id)
 		_peer_left.rpc(id)
@@ -141,14 +149,14 @@ func _on_peer_disconnected(id: int):
 # Clients receive this when another player disconnects.
 @rpc("any_peer", "reliable")
 func _peer_left(id: int):
-	_do_remove(id)
+	_remove_player(id)
 	hud.add_log("Player %d left." % id)
 
 @rpc("any_peer", "reliable")
 func _broadcast_log(msg: String):
 	hud.add_log(msg)
 
-func _do_spawn(id: int):
+func _instantiate_player(id: int):
 	if $Players.get_node_or_null(str(id)):
 		return
 	var player = PLAYER.instantiate()
@@ -161,6 +169,10 @@ func _do_spawn(id: int):
 	if is_local:
 		player.init_local(hud)
 
+func _remove_player(id: int):
+	var node = $Players.get_node_or_null(str(id))
+	if node:
+		node.queue_free()
 
 # ── Late-join world state sync ──────────────────────────────────────────────
 
@@ -170,14 +182,14 @@ func _find_interactable_node(node: Node) -> Interactable:
 			return child
 	return null
 
-# Host calls this for each newly connected peer to bring them up to date.
-func _send_world_state_to(id: int):
+## Sends a full world state snapshot to a newly connected peer.
+func _sync_world_to_peer(id: int):
 	for node in get_tree().get_nodes_in_group("world_objects"):
 		if not node is RigidBody3D:
 			continue
 		var interactable = _find_interactable_node(node)
 		var is_held = interactable != null and interactable.is_held
-		_sync_world_object.rpc_id(
+		_rpc_recv_object_state.rpc_id(
 			id,
 			str(node.get_path()),
 			node.global_transform,
@@ -186,10 +198,10 @@ func _send_world_state_to(id: int):
 		)
 
 @rpc("any_peer", "reliable")
-func _sync_world_object(obj_path: String, xform: Transform3D, vel: Vector3, is_held: bool):
+func _rpc_recv_object_state(obj_path: String, xform: Transform3D, vel: Vector3, is_held: bool):
 	var obj = get_tree().root.get_node_or_null(obj_path)
 	if not obj is RigidBody3D:
-		push_warning("[world] _sync_world_object: node not found: %s" % obj_path)
+		push_warning("[world] _rpc_recv_object_state: node not found: %s" % obj_path)
 		return
 	obj.global_transform = xform
 	obj.linear_velocity = vel
@@ -200,20 +212,60 @@ func _sync_world_object(obj_path: String, xform: Transform3D, vel: Vector3, is_h
 		if interactable:
 			interactable.is_held = true
 
+# ── Dynamic spawning ────────────────────────────────────────────────────────
+
+## Public entry-point called by player.gd after a successful spawn raycast.
+## Routes through the server so physics authority is always correct.
+func spawn_object(scene_path: String, pos: Vector3) -> void:
+	if multiplayer.has_multiplayer_peer() and not multiplayer.is_server():
+		_rpc_request_spawn.rpc_id(1, scene_path, pos)
+	else:
+		_server_spawn_object(scene_path, pos)
+
+## Client asks the server to spawn an object.
+@rpc("any_peer", "reliable")
+func _rpc_request_spawn(scene_path: String, pos: Vector3) -> void:
+	if not multiplayer.is_server():
+		return
+	_server_spawn_object(scene_path, pos)
+
+## Server-side: instantiate, record, and broadcast to all clients.
+func _server_spawn_object(scene_path: String, pos: Vector3) -> void:
+	_spawn_counter += 1
+	var obj_name: String = "dynobj_%d" % _spawn_counter
+	var xform: Transform3D = Transform3D(Basis.IDENTITY, pos)
+	_add_scene_object(scene_path, xform, obj_name)
+	_spawned_objects.append({"scene": scene_path, "name": obj_name})
+	if multiplayer.has_multiplayer_peer():
+		_rpc_recv_spawn.rpc(scene_path, xform, obj_name)
+
+## Clients (and late-joiners) receive this to instantiate the object locally.
+@rpc("authority", "reliable")
+func _rpc_recv_spawn(scene_path: String, xform: Transform3D, obj_name: String) -> void:
+	_add_scene_object(scene_path, xform, obj_name)
+
+func _add_scene_object(scene_path: String, xform: Transform3D, obj_name: String) -> void:
+	var packed = load(scene_path)
+	if not packed:
+		push_warning("[world] spawn: cannot load '%s'" % scene_path)
+		return
+	# Avoid duplicate if this peer already has the node (e.g. server calling rpc()).
+	if get_node_or_null(obj_name):
+		return
+	var obj: Node = packed.instantiate()
+	obj.name = obj_name
+	add_child(obj)
+	obj.global_transform = xform   # must be set after add_child
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 ## Recursively walks a scene node and calls create_trimesh_collision() on
 ## every MeshInstance3D found. Used to generate runtime collision for GLB
 ## imports where the _subresources collision flag is unreliable.
-func _generate_mesh_collision(node: Node) -> void:
+func _build_mesh_colliders(node: Node) -> void:
 	if not node:
 		return
 	if node is MeshInstance3D:
 		node.create_trimesh_collision()
 	for child in node.get_children():
-		_generate_mesh_collision(child)
-
-func _do_remove(id: int):
-	var node = $Players.get_node_or_null(str(id))
-	if node:
-		node.queue_free()
+		_build_mesh_colliders(child)

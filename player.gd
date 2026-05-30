@@ -23,8 +23,8 @@ var ROLL_DAMPING = 0.08       # axial-spin damping — much lower so spin coasts
 var SWAY_MOUSE_SCALE = 0.008  # pixels → angular velocity (rad/s, scaled by 1/pivot)
 var ENDPOINT_MARGIN = 0.06    # minimum clearance between object endpoints and surfaces
 
-var sliding := false
-var tab_mode := false
+var _sliding := false
+var _tab_mode := false
 var _sway_angle: float = -PI / 2.0   # position of close end on the circle (−½π = bottom)
 var _sway_ang_vel: float = 0.0       # position angular velocity (rad/s)
 var _sway_target:    float = -PI / 2.0  # spring target angle
@@ -33,20 +33,24 @@ var _sway_direction: float = 0.0        # last mouse direction angle (for change
 var _roll_angle: float = -PI / 2.0   # axial spin angle (starts matched to sway rest)
 var _roll_ang_vel: float = 0.0       # axial spin angular velocity (rad/s)
 var _mouse_delta: Vector2 = Vector2.ZERO # accumulated mouse movement since last carry update
-var held_object: PhysicsBody3D = null
-var held_interactable: Interactable = null
-var held_holdable: Holdable = null
-var punch_offset: float = 0.0
-var punch_velocity: float = 0.0
-var punch_held: bool = false
-var punch_cooldown: float = 0.0
-var punch_peaked: bool = false
-var punch_hold_timer: float = 0.0   # countdown at max extension before settling begins
-var punch_start_angle: float = 0.0  # sway angle when punch was initiated
-var punch_returning: bool = false   # true while spring is guiding sway to opposite side
-var punch_measuring: bool = false
-var punch_peak_speed: float = 0.0
-var punch_target_name: String = ""
+
+var _held_object:       PhysicsBody3D = null
+var _held_interactable: Interactable  = null
+var _held_holdable:     Holdable      = null
+
+var _punch_offset:      float  = 0.0
+var _punch_vel:         float  = 0.0
+var _punch_held:        bool   = false
+var _punch_cooldown:    float  = 0.0
+var _punch_peaked:      bool   = false
+var _punch_hold_timer:  float  = 0.0   # countdown at max extension before settling begins
+var _punch_start_angle: float  = 0.0   # sway angle when punch was initiated
+var _punch_returning:   bool   = false # true while spring is guiding sway to opposite side
+var _punch_measuring:   bool   = false
+var _punch_peak_speed:  float  = 0.0
+var _punch_target_name: String = ""
+var _lunge_active:      bool   = false # true only when punch fully extended AND w_pull > 0
+
 var _hud: Node = null
 
 # ── Remote-player lerp targets (non-authority only) ─────────────────────────
@@ -60,7 +64,7 @@ var _has_net_state:  bool    = false
 var _test_params := PhysicsTestMotionParameters3D.new()
 var _test_result := PhysicsTestMotionResult3D.new()
 
-func _is_mp_connected() -> bool:
+func _is_peer_connected() -> bool:
 	return multiplayer.has_multiplayer_peer() and \
 		multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
 
@@ -86,28 +90,28 @@ func init_local(hud_node: Node) -> void:
 	_hud.action_chosen.connect(_on_action_chosen)
 	_hud.set_local_player(self)
 
-func _lerp_remote_state(delta: float) -> void:
+func _lerp_remote_player(delta: float) -> void:
 	if not _has_net_state:
 		return
 	var t: float = minf(delta * 20.0, 1.0)
-	global_position = global_position.lerp(_net_pos, t)
-	rotation.y      = lerp_angle(rotation.y,      _net_rot_y, t)
+	global_position   = global_position.lerp(_net_pos, t)
+	rotation.y        = lerp_angle(rotation.y,        _net_rot_y, t)
 	camera.rotation.x = lerp_angle(camera.rotation.x, _net_cam_x, t)
 
 func _process(delta):
 	if not is_multiplayer_authority():
-		_lerp_remote_state(delta)
+		_lerp_remote_player(delta)
 		return
-	var prev_cooldown = punch_cooldown
-	punch_cooldown = maxf(punch_cooldown - delta, 0.0)
-	if punch_measuring and prev_cooldown > 0.0 and punch_cooldown <= 0.0:
-		print("[punch] peak speed on '%s': %.1f u/s" % [punch_target_name, punch_peak_speed])
-		punch_measuring = false
-	if held_object:
-		_carry_update(delta)
+	var prev_cooldown = _punch_cooldown
+	_punch_cooldown = maxf(_punch_cooldown - delta, 0.0)
+	if _punch_measuring and prev_cooldown > 0.0 and _punch_cooldown <= 0.0:
+		print("[punch] peak speed on '%s': %.1f u/s" % [_punch_target_name, _punch_peak_speed])
+		_punch_measuring = false
+	if _held_object:
+		_update_held_object(delta)
 	if not _hud:
 		return
-	if not tab_mode:
+	if not _tab_mode:
 		_hud.hide_hover_label()
 		return
 	var mouse_pos = get_viewport().get_mouse_position()
@@ -130,38 +134,39 @@ func _unhandled_input(event):
 		return
 
 	# Click to recapture mouse when free (not in tab mode)
-	if event is InputEventMouseButton and event.pressed and not tab_mode:
+	if event is InputEventMouseButton and event.pressed and not _tab_mode:
 		if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
 			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 			return
 
 	# Held object inputs (mouse captured, not in tab mode)
-	if held_object and not tab_mode and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
+	if _held_object and not _tab_mode and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
 		if event is InputEventMouseButton:
 			if event.pressed:
 				match event.button_index:
 					MOUSE_BUTTON_LEFT:
-						_try_held_action("m1")
+						_dispatch_held_input("m1")
 						return
 					MOUSE_BUTTON_RIGHT:
-						_try_held_action("m2")
+						_dispatch_held_input("m2")
 						return
 					MOUSE_BUTTON_WHEEL_UP:
-						_try_held_action("scroll_up")
+						_dispatch_held_input("scroll_up")
 						return
 			elif event.button_index == MOUSE_BUTTON_LEFT:
-				punch_held = false
+				_punch_held = false
 				return
 
 	# Tab: toggle HUD interact mode
 	if event is InputEventKey and not event.echo and event.pressed:
 		if event.physical_keycode == KEY_TAB:
-			tab_mode = !tab_mode
+			_tab_mode = !_tab_mode
 			if _hud:
 				_hud.hide_action_menu()
 				_hud.hide_hover_label()
 				_hud.hide_info_popup()
-			if tab_mode:
+				_hud.set_tab_mode(_tab_mode)
+			if _tab_mode:
 				Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 			elif not (_hud and _hud.pause_overlay.visible):
 				Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -174,22 +179,27 @@ func _unhandled_input(event):
 		rotate_y(-event.relative.x * MOUSE_SENSITIVITY)
 		camera.rotate_x(-event.relative.y * MOUSE_SENSITIVITY)
 		camera.rotation.x = clamp(camera.rotation.x, -PI/2, PI/2)
-		if held_object:
+		if _held_object:
 			_mouse_delta += event.relative
 
-	# Left click in tab mode
-	if tab_mode and event is InputEventMouseButton:
+	# Left / right click in tab mode
+	if _tab_mode and event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-			if _hud and _hud.is_action_menu_visible():
+			if _hud and not _hud._pending_spawn.is_empty():
+				_place_queued_spawn()
+			elif _hud and _hud.is_action_menu_visible():
 				_hud.hide_action_menu()
 			elif _hud and _hud.is_info_popup_visible():
 				_hud.hide_info_popup()
 			elif _hud and _hud.is_tune_popup_visible():
 				_hud.hide_tune_popup()
-			elif held_object:
-				_release_object()
+			elif _held_object:
+				_drop_object()
 			else:
-				_try_interact()
+				_show_interact_menu()
+		elif event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+			if _hud and not _hud._pending_spawn.is_empty():
+				_hud.cancel_pending_spawn()
 
 func _physics_process(delta):
 	var gravity = get_gravity() * GRAVITY_SCALE
@@ -197,13 +207,13 @@ func _physics_process(delta):
 	if not is_on_floor():
 		velocity += gravity * delta
 
-	sliding = Input.is_action_pressed("slide") and is_on_floor()
+	_sliding = Input.is_action_pressed("slide") and is_on_floor()
 
 	if Input.is_action_just_pressed("jump") and is_on_floor():
 		velocity.y = JUMP_VELOCITY
-		sliding = false
+		_sliding = false
 
-	if sliding:
+	if _sliding:
 		var floor_normal = get_floor_normal()
 		# Component of gravity tangent to the slope — pulls downhill, resists uphill
 		var slope_accel = gravity - gravity.dot(floor_normal) * floor_normal
@@ -225,12 +235,12 @@ func _physics_process(delta):
 
 	move_and_slide()
 
-	if _is_mp_connected():
-		_sync_state.rpc(global_position, rotation.y, camera.rotation.x)
-		if held_object:
-			_sync_held_object.rpc(str(held_object.get_path()), held_object.global_transform)
+	if _is_peer_connected():
+		_rpc_player_state.rpc(global_position, rotation.y, camera.rotation.x)
+		if _held_object:
+			_rpc_held_xform.rpc(str(_held_object.get_path()), _held_object.global_transform)
 
-func _try_interact():
+func _show_interact_menu():
 	var mouse_pos = get_viewport().get_mouse_position()
 	var origin = camera.project_ray_origin(mouse_pos)
 	var ray_end = origin + camera.project_ray_normal(mouse_pos) * INTERACT_RANGE
@@ -270,33 +280,33 @@ func _on_action_chosen(action: String, target: Node):
 		"Take":
 			var holdable = _find_holdable(target)
 			if target is RigidBody3D and holdable:
-				held_object = target
-				held_object.add_collision_exception_with(self)
-				add_collision_exception_with(held_object)
-				held_object.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
-				held_object.freeze = true
-				held_interactable = _find_interactable(target)
-				held_holdable = holdable
-				if held_interactable:
-					held_interactable.is_held = true
-				if _is_mp_connected():
-					_sync_take_object.rpc(str(held_object.get_path()))
-				tab_mode = false
+				_held_object = target
+				_held_object.add_collision_exception_with(self)
+				add_collision_exception_with(_held_object)
+				_held_object.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+				_held_object.freeze = true
+				_held_interactable = _find_interactable(target)
+				_held_holdable = holdable
+				if _held_interactable:
+					_held_interactable.is_held = true
+				if _is_peer_connected():
+					_rpc_take_object.rpc(str(_held_object.get_path()))
+				_tab_mode = false
 				if not (_hud and _hud.pause_overlay.visible):
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 			elif target is CharacterBody3D and holdable:
-				held_object = target
-				held_object.add_collision_exception_with(self)
-				add_collision_exception_with(held_object)
-				held_interactable = _find_interactable(target)
-				held_holdable = holdable
+				_held_object = target
+				_held_object.add_collision_exception_with(self)
+				add_collision_exception_with(_held_object)
+				_held_interactable = _find_interactable(target)
+				_held_holdable = holdable
 				if target.is_multiplayer_authority():
 					target.set_physics_process(false)
-				if held_interactable:
-					held_interactable.is_held = true
-				if _is_mp_connected():
-					_sync_take_object.rpc(str(held_object.get_path()))
-				tab_mode = false
+				if _held_interactable:
+					_held_interactable.is_held = true
+				if _is_peer_connected():
+					_rpc_take_object.rpc(str(_held_object.get_path()))
+				_tab_mode = false
 				if not (_hud and _hud.pause_overlay.visible):
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 		"Info":
@@ -312,140 +322,160 @@ func _on_action_chosen(action: String, target: Node):
 			if interactable:
 				interactable.action_performed.emit(action, self)
 
-func _reset_held_state():
-	if is_instance_valid(held_object):
-		held_object.remove_collision_exception_with(self)
-		remove_collision_exception_with(held_object)
-	held_object = null
-	held_interactable = null
-	held_holdable = null
-	punch_offset = 0.0
-	punch_velocity = 0.0
-	punch_held = false
-	punch_peaked = false
-	punch_hold_timer = 0.0
-	punch_start_angle = 0.0
-	punch_returning = false
-	punch_cooldown = 0.0
-	punch_measuring = false
-	_sway_angle     = -PI / 2.0
-	_sway_ang_vel   = 0.0
-	_sway_target    = -PI / 2.0
-	_sway_amplitude = 0.0
-	_sway_direction = 0.0
-	_roll_angle = -PI / 2.0
-	_roll_ang_vel = 0.0
-	_mouse_delta = Vector2.ZERO
+func _clear_hold_state():
+	if is_instance_valid(_held_object):
+		_held_object.remove_collision_exception_with(self)
+		remove_collision_exception_with(_held_object)
+	_held_object        = null
+	_held_interactable  = null
+	_held_holdable      = null
+	_punch_offset       = 0.0
+	_punch_vel          = 0.0
+	_punch_held         = false
+	_punch_peaked       = false
+	_punch_hold_timer   = 0.0
+	_punch_start_angle  = 0.0
+	_punch_returning    = false
+	_punch_cooldown     = 0.0
+	_punch_measuring    = false
+	_lunge_active       = false
+	_sway_angle         = -PI / 2.0
+	_sway_ang_vel       = 0.0
+	_sway_target        = -PI / 2.0
+	_sway_amplitude     = 0.0
+	_sway_direction     = 0.0
+	_roll_angle         = -PI / 2.0
+	_roll_ang_vel       = 0.0
+	_mouse_delta        = Vector2.ZERO
 
-func _release_object():
-	if not held_object:
+func _drop_object():
+	if not _held_object:
 		return
-	if held_object is RigidBody3D:
-		held_object.continuous_cd = true   # prevent tunnelling through thin geometry
-		held_object.freeze = false
-		held_object.linear_velocity = velocity
-		var ang_vel: Vector3 = held_object.global_transform.basis.y * _roll_ang_vel
-		held_object.angular_velocity = ang_vel
-		if _is_mp_connected():
-			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, velocity, ang_vel)
-	elif held_object is CharacterBody3D:
-		if held_object.is_multiplayer_authority():
-			held_object.set_physics_process(true)
-		if _is_mp_connected():
-			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, Vector3.ZERO, Vector3.ZERO)
-	if held_interactable:
-		held_interactable.is_held = false
-	_reset_held_state()
+	if _held_object is RigidBody3D:
+		_held_object.continuous_cd = true   # prevent tunnelling through thin geometry
+		_held_object.freeze = false
+		_held_object.linear_velocity = velocity
+		var ang_vel: Vector3 = _held_object.global_transform.basis.y * _roll_ang_vel
+		_held_object.angular_velocity = ang_vel
+		if _is_peer_connected():
+			_rpc_drop_object.rpc(str(_held_object.get_path()), _held_object.global_position, velocity, ang_vel)
+	elif _held_object is CharacterBody3D:
+		if _held_object.is_multiplayer_authority():
+			_held_object.set_physics_process(true)
+		if _is_peer_connected():
+			_rpc_drop_object.rpc(str(_held_object.get_path()), _held_object.global_position, Vector3.ZERO, Vector3.ZERO)
+	if _held_interactable:
+		_held_interactable.is_held = false
+	_clear_hold_state()
 
-func _try_held_action(input: String):
-	if not held_holdable:
+func _dispatch_held_input(input: String):
+	if not _held_holdable:
 		return
 	var action: String
 	match input:
-		"m1": action = held_holdable.m1_action
-		"m2": action = held_holdable.m2_action
-		"scroll_up": action = held_holdable.scroll_up_action
+		"m1": action = _held_holdable.m1_action
+		"m2": action = _held_holdable.m2_action
+		"scroll_up": action = _held_holdable.scroll_up_action
 	if action.is_empty():
 		return
 	match action:
-		"punch": _do_punch()
-		"throw": _do_throw()
+		"punch": _start_punch()
+		"throw": _throw_object()
 		_:
-			if held_interactable:
-				held_interactable.action_performed.emit(action, self)
+			if _held_interactable:
+				_held_interactable.action_performed.emit(action, self)
 
-func _do_punch():
-	if punch_cooldown > 0.0:
+func _start_punch():
+	if _punch_cooldown > 0.0:
 		return
 	# Resolve per-object overrides: holdable > player default
-	var eff_cooldown:    float = held_holdable.punch_cooldown if held_holdable and held_holdable.punch_cooldown > 0.0 else PUNCH_COOLDOWN
-	var eff_punch_dist:  float = held_holdable.punch_distance if held_holdable and held_holdable.punch_distance > 0.0 else PUNCH_DISTANCE
-	var eff_carry_dist:  float = held_holdable.carry_distance if held_holdable and held_holdable.carry_distance > 0.0 else CARRY_DISTANCE
-	var eff_impulse:     float = held_holdable.punch_impulse  if held_holdable and held_holdable.punch_impulse  > 0.0 else PUNCH_IMPULSE
-	punch_cooldown = eff_cooldown
-	punch_held = true
-	punch_velocity = 0.0
-	punch_start_angle = _sway_angle
-	punch_measuring = true
-	punch_peak_speed = 0.0
-	punch_target_name = held_object.name
-	print("[punch] player %d punched '%s'" % [multiplayer.get_unique_id(), punch_target_name])
+	var eff_cooldown:    float = _held_holdable.punch_cooldown if _held_holdable and _held_holdable.punch_cooldown > 0.0 else PUNCH_COOLDOWN
+	var eff_punch_dist:  float = _held_holdable.punch_distance if _held_holdable and _held_holdable.punch_distance > 0.0 else PUNCH_DISTANCE
+	var eff_carry_dist:  float = _held_holdable.carry_distance if _held_holdable and _held_holdable.carry_distance > 0.0 else CARRY_DISTANCE
+	var eff_impulse:     float = _held_holdable.punch_impulse  if _held_holdable and _held_holdable.punch_impulse  > 0.0 else PUNCH_IMPULSE
+	_punch_cooldown    = eff_cooldown
+	_punch_held        = true
+	_punch_vel         = 0.0
+	_punch_start_angle = _sway_angle
+	_punch_measuring   = true
+	_punch_peak_speed  = 0.0
+	_punch_target_name = _held_object.name
+	print("[punch] player %d punched '%s'" % [multiplayer.get_unique_id(), _punch_target_name])
 	var punch_dir = -camera.global_transform.basis.z
 	var from = camera.global_position
 	var to = from + punch_dir * (eff_carry_dist + eff_punch_dist)
 	var params = PhysicsRayQueryParameters3D.create(from, to)
-	params.exclude = [get_rid(), held_object.get_rid()]
+	params.exclude = [get_rid(), _held_object.get_rid()]
 	var hit = get_world_3d().direct_space_state.intersect_ray(params)
 	if hit and hit.collider is RigidBody3D:
 		hit.collider.apply_central_impulse(punch_dir * eff_impulse)
 		# Non-host clients: forward the impulse to the host so authoritative
 		# physics drives the result and it propagates to all peers via the broadcast.
-		if _is_mp_connected() and not multiplayer.is_server():
-			_sync_punch_impulse.rpc_id(1, str(hit.collider.get_path()), punch_dir * eff_impulse)
+		if _is_peer_connected() and not multiplayer.is_server():
+			_rpc_punch_impulse.rpc_id(1, str(hit.collider.get_path()), punch_dir * eff_impulse)
 
-func _do_throw():
-	if not held_object:
+func _throw_object():
+	if not _held_object:
 		return
-	print("[throw] player %d threw '%s'" % [multiplayer.get_unique_id(), held_object.name])
-	var eff_throw_speed: float = held_holdable.throw_speed if held_holdable and held_holdable.throw_speed > 0.0 else THROW_SPEED
-	if held_object is RigidBody3D:
+	print("[throw] player %d threw '%s'" % [multiplayer.get_unique_id(), _held_object.name])
+	var eff_throw_speed: float = _held_holdable.throw_speed if _held_holdable and _held_holdable.throw_speed > 0.0 else THROW_SPEED
+	if _held_object is RigidBody3D:
 		var throw_dir = -camera.global_transform.basis.z
 		var throw_vel = velocity + throw_dir * eff_throw_speed
-		var throw_ang_vel: Vector3 = held_object.global_transform.basis.y * _roll_ang_vel
-		held_object.continuous_cd = true   # prevent tunnelling through thin geometry
-		held_object.freeze = false
-		held_object.linear_velocity = throw_vel
-		held_object.angular_velocity = throw_ang_vel
-		if _is_mp_connected():
-			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, throw_vel, throw_ang_vel)
-	elif held_object is CharacterBody3D:
-		if held_object.is_multiplayer_authority():
-			held_object.set_physics_process(true)
-		if _is_mp_connected():
-			_sync_release_object.rpc(str(held_object.get_path()), held_object.global_position, Vector3.ZERO, Vector3.ZERO)
-	if held_interactable:
-		held_interactable.is_held = false
-	_reset_held_state()
+		var throw_ang_vel: Vector3 = _held_object.global_transform.basis.y * _roll_ang_vel
+		_held_object.continuous_cd = true   # prevent tunnelling through thin geometry
+		_held_object.freeze = false
+		_held_object.linear_velocity = throw_vel
+		_held_object.angular_velocity = throw_ang_vel
+		if _is_peer_connected():
+			_rpc_drop_object.rpc(str(_held_object.get_path()), _held_object.global_position, throw_vel, throw_ang_vel)
+	elif _held_object is CharacterBody3D:
+		if _held_object.is_multiplayer_authority():
+			_held_object.set_physics_process(true)
+		if _is_peer_connected():
+			_rpc_drop_object.rpc(str(_held_object.get_path()), _held_object.global_position, Vector3.ZERO, Vector3.ZERO)
+	if _held_interactable:
+		_held_interactable.is_held = false
+	_clear_hold_state()
 
-func _carry_update(delta: float):
-	if not is_instance_valid(held_object):
-		if is_instance_valid(held_interactable):
-			held_interactable.is_held = false
-		_reset_held_state()
+func _place_queued_spawn() -> void:
+	if not _hud or _hud._pending_spawn.is_empty():
+		return
+	var scene_path: String = _hud._pending_spawn
+	var mouse_pos          = get_viewport().get_mouse_position()
+	var origin: Vector3    = camera.project_ray_origin(mouse_pos)
+	var ray_end: Vector3   = origin + camera.project_ray_normal(mouse_pos) * 50.0
+	var params             = PhysicsRayQueryParameters3D.create(origin, ray_end)
+	params.exclude         = [get_rid()]
+	var hit = get_world_3d().direct_space_state.intersect_ray(params)
+	if not hit:
+		return
+	# Place the object slightly above the surface so physics doesn't start intersecting.
+	var spawn_pos: Vector3 = hit.position + hit.normal * 0.8
+	var world: Node        = get_parent().get_parent()
+	if world and world.has_method("spawn_object"):
+		world.spawn_object(scene_path, spawn_pos)
+	_hud.cancel_pending_spawn()
+
+func _update_held_object(delta: float):
+	if not is_instance_valid(_held_object):
+		if is_instance_valid(_held_interactable):
+			_held_interactable.is_held = false
+		_clear_hold_state()
 		return
 	# ── Effective per-object values (holdable overrides > player defaults) ───────
-	var eff_max_carry:  float = held_holdable.max_carry_dist  if held_holdable and held_holdable.max_carry_dist  > 0.0 else MAX_CARRY_DIST
-	var eff_carry_dist: float = held_holdable.carry_distance  if held_holdable and held_holdable.carry_distance  > 0.0 else CARRY_DISTANCE
-	var eff_punch_dist: float = held_holdable.punch_distance  if held_holdable and held_holdable.punch_distance  > 0.0 else PUNCH_DISTANCE
+	var eff_max_carry:  float = _held_holdable.max_carry_dist  if _held_holdable and _held_holdable.max_carry_dist  > 0.0 else MAX_CARRY_DIST
+	var eff_carry_dist: float = _held_holdable.carry_distance  if _held_holdable and _held_holdable.carry_distance  > 0.0 else CARRY_DISTANCE
+	var eff_punch_dist: float = _held_holdable.punch_distance  if _held_holdable and _held_holdable.punch_distance  > 0.0 else PUNCH_DISTANCE
 
-	if held_object.global_position.distance_to(camera.global_position) > eff_max_carry:
-		_release_object()
+	if _held_object.global_position.distance_to(camera.global_position) > eff_max_carry:
+		_drop_object()
 		return
 
 	# ── Weight bucket dynamics ────────────────────────────────────────────────
 	# Fetched once per frame so punch-pull and sway share the same values.
-	var pivot: float     = held_holdable.hold_pivot if held_holdable else 0.0
-	var dyn: Dictionary  = held_holdable.get_dynamics() if held_holdable else {}
+	var pivot: float     = _held_holdable.hold_pivot if _held_holdable else 0.0
+	var dyn: Dictionary  = _held_holdable.get_dynamics() if _held_holdable else {}
 	var w_mouse:  float  = dyn.get("sway_mouse_scale", SWAY_MOUSE_SCALE)
 	var w_sway:   float  = dyn.get("sway_damping",     SWAY_DAMPING)
 	var w_roll:   float  = dyn.get("roll_damping",      ROLL_DAMPING)
@@ -464,41 +494,56 @@ func _carry_update(delta: float):
 	#   3. Settling   — slow retraction (w_settle_spd) to the idle M1 position.
 	# When M1 is released (Phase 4):
 	#   offset returns to 0; sway springs to the opposite side of the circle.
-	if punch_held:
-		if not punch_peaked:
+	if _punch_held:
+		if not _punch_peaked:
 			# Phase 1: weight-scaled extend
-			if punch_offset < eff_punch_dist:
-				punch_velocity += w_punch_accel * delta
-				punch_offset = minf(punch_offset + punch_velocity * delta, eff_punch_dist)
+			if _punch_offset < eff_punch_dist:
+				_punch_vel    += w_punch_accel * delta
+				_punch_offset  = minf(_punch_offset + _punch_vel * delta, eff_punch_dist)
 			# Transition to Phase 2 on first frame at max
-			if punch_offset >= eff_punch_dist:
-				punch_peaked = true
-				punch_hold_timer = w_peak_hold
-				if w_pull > 0.0:
-					velocity += -camera.global_transform.basis.z * w_pull
-		elif punch_hold_timer > 0.0:
-			# Phase 2: dwell at max extension
-			punch_hold_timer -= delta
-			punch_velocity = 0.0
-			punch_offset = eff_punch_dist
+			if _punch_offset >= eff_punch_dist:
+				# Lunge only granted if the object actually reached full extension.
+				var fwd: Vector3        = -camera.global_transform.basis.z
+				var forward_dist: float = (_held_object.global_position - camera.global_position).dot(fwd)
+				var intended_fwd: float = eff_carry_dist + eff_punch_dist - pivot
+				_lunge_active  = (w_pull > 0.0) and (forward_dist >= intended_fwd * 0.85)
+				_punch_peaked  = true
+				_punch_hold_timer = w_peak_hold
+		elif _punch_hold_timer > 0.0:
+			# Phase 2: dwell at max extension — continuously pull player while lunging
+			_punch_hold_timer -= delta
+			_punch_vel         = 0.0
+			_punch_offset      = eff_punch_dist
+			if _lunge_active and w_peak_hold > 0.001:
+				var punch_dir: Vector3 = -camera.global_transform.basis.z
+				velocity += punch_dir * (w_pull / w_peak_hold) * delta
 		else:
-			# Phase 3: slow retraction to the M1-held settle position
-			punch_velocity = 0.0
-			punch_offset = move_toward(punch_offset, eff_punch_dist * PUNCH_SETTLE_FRAC, w_settle_spd * delta)
+			# Phase 3: slow retraction to the M1-held settle position — end lunge,
+			# begin opposite-side swing so the object tracks back through the far edge.
+			_lunge_active = false
+			if not _punch_returning:
+				_punch_returning = true
+				var return_target: float = fposmod(_punch_start_angle + PI, TAU)
+				_sway_target    = return_target
+				_sway_direction = return_target
+				_sway_amplitude = 1.0
+			_punch_vel    = 0.0
+			_punch_offset = move_toward(_punch_offset, eff_punch_dist * PUNCH_SETTLE_FRAC, w_settle_spd * delta)
 	else:
 		# Phase 4: M1 released — retract offset; activate opposite-side sway spring
-		if punch_peaked:
-			punch_returning = true
+		_lunge_active = false
+		if _punch_peaked:
+			_punch_returning = true
 			# Pre-aim the normal sway spring at the destination so it holds the object
-			# there once punch_returning finishes, instead of snapping back to the old target.
-			var return_target: float = fposmod(punch_start_angle + PI, TAU)
+			# there once _punch_returning finishes, instead of snapping back to the old target.
+			var return_target: float = fposmod(_punch_start_angle + PI, TAU)
 			_sway_target    = return_target
 			_sway_direction = return_target
 			_sway_amplitude = 1.0
-		punch_peaked = false
-		punch_hold_timer = 0.0
-		punch_velocity = 0.0
-		punch_offset = move_toward(punch_offset, 0.0, PUNCH_RETURN_SPEED * delta)
+		_punch_peaked     = false
+		_punch_hold_timer = 0.0
+		_punch_vel        = 0.0
+		_punch_offset     = move_toward(_punch_offset, 0.0, PUNCH_RETURN_SPEED * delta)
 
 	# ── Sway + roll (two independent angular degrees of freedom) ────────────
 	# _sway_angle — position of close end on the sway circle.
@@ -508,42 +553,35 @@ func _carry_update(delta: float):
 	# _roll_angle — axial spin; still impulse-driven (unchanged).
 
 	# Update sway target from mouse input.
-	# _sway_amplitude tracks how far across the circle the object sits (0=rest, 1=full edge).
-	# Amplitude can only INCREASE for the same direction — it never retreats mid-gesture,
-	# so the target stays locked after a flick even as the mouse decelerates.
-	# A significant direction reversal (>108°) resets amplitude to the new flick's strength.
 	var mouse_len: float = _mouse_delta.length()
 	if mouse_len > 2.0:
 		var new_dir: float  = atan2(_mouse_delta.y, -_mouse_delta.x)
 		var new_amp: float  = clampf(mouse_len / w_sway_sens, 0.0, 1.0)
 		var dir_diff: float = abs(fposmod(new_dir - _sway_direction + PI, TAU) - PI)
 		if dir_diff > PI * 0.6:
-			# Direction changed substantially — start fresh at the new flick's amplitude
 			_sway_amplitude = new_amp
 		else:
-			# Same direction — lock in the peak, never let it retreat
 			_sway_amplitude = maxf(_sway_amplitude, new_amp)
 		_sway_direction = new_dir
 		_sway_target    = lerp_angle(-PI * 0.5, _sway_direction, _sway_amplitude)
 
-	# Axial roll — tangential impulse, same model as before
+	# Axial roll — tangential impulse
 	var tangent: Vector2 = Vector2(-sin(_sway_angle), cos(_sway_angle))
 	_roll_ang_vel += -_mouse_delta.dot(tangent) * w_mouse / maxf(pivot, 0.25)
 	_mouse_delta = Vector2.ZERO
 
-	if punch_returning and not punch_held:
+	if _punch_returning:
 		# Critically-damped spring pulls sway to the opposite side of the circle.
-		# Spring stiffness is weight-scaled: lighter objects snap back faster.
-		var return_target: float = punch_start_angle + PI
+		var return_target: float = _punch_start_angle + PI
 		var angle_err: float     = fposmod(return_target - _sway_angle + PI, TAU) - PI
 		var spring_k: float      = 36.0 * (0.3 / maxf(w_sway, 0.01))
 		var spring_d: float      = 2.0 * sqrt(spring_k)   # critically damped
 		_sway_ang_vel += angle_err * spring_k * delta
 		_sway_ang_vel *= maxf(0.0, 1.0 - spring_d * delta)
 		_sway_angle   += _sway_ang_vel * delta
-		if punch_offset <= 0.001 and abs(angle_err) < 0.08 and abs(_sway_ang_vel) < 0.1:
-			punch_returning = false
-	elif punch_held:
+		if _punch_offset <= 0.001 and abs(angle_err) < 0.08 and abs(_sway_ang_vel) < 0.1:
+			_punch_returning = false
+	elif _punch_held:
 		# Suppress sway quickly so the object straightens during a punch
 		_sway_ang_vel *= maxf(0.0, 1.0 - w_sway * 8.0 * delta)
 	else:
@@ -569,7 +607,7 @@ func _carry_update(delta: float):
 	# punch extends, then drifts back out as it retracts — no snap.
 	var sway_pos: Vector2 = Vector2.ZERO
 	if pivot > 0.001:
-		var punch_t: float = punch_offset / maxf(eff_punch_dist, 0.001)
+		var punch_t: float = _punch_offset / maxf(eff_punch_dist, 0.001)
 		sway_pos = Vector2(cos(_sway_angle), sin(_sway_angle)) * pivot * (1.0 - punch_t)
 
 	# ── Object transform + endpoint collision protection ─────────────────────
@@ -581,11 +619,11 @@ func _carry_update(delta: float):
 	#     velocity is killed so the object doesn't keep pushing into the surface.
 	# The existing body_test_motion sweep then handles linear centre-motion for
 	# all objects (pivot and no-pivot alike).
-	var rotation_offset: Basis = Basis.from_euler(held_holdable.hold_rotation * (PI / 180.0)) if held_holdable else Basis.IDENTITY
+	var rotation_offset: Basis = Basis.from_euler(_held_holdable.hold_rotation * (PI / 180.0)) if _held_holdable else Basis.IDENTITY
 
 	var cam_basis: Basis   = camera.global_transform.basis
 	var cam_pos:   Vector3 = camera.global_position
-	var depth: float       = eff_carry_dist + punch_offset
+	var depth: float       = eff_carry_dist + _punch_offset
 
 	var target_pos:   Vector3
 	var target_basis: Basis
@@ -593,26 +631,19 @@ func _carry_update(delta: float):
 	if pivot > 0.001:
 		var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
 		var ray: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.new()
-		ray.exclude = [get_rid(), held_object.get_rid()]
+		ray.exclude = [get_rid(), _held_object.get_rid()]
 
 		# ── Ray 1: anchor (tip / far end) ────────────────────────────────────
-		# Prevents the tip from passing into any surface in front of the player.
 		var anchor: Vector3 = cam_pos + cam_basis * Vector3(CARRY_OFFSET_X, CARRY_OFFSET_Y, -depth)
 		ray.from = cam_pos
 		ray.to   = anchor
 		var tip_hit: Dictionary = space.intersect_ray(ray)
 		if tip_hit:
-			# Minimum depth = 2*pivot + margin so the butt end never crosses
-			# behind the camera plane and into the player's collision capsule.
 			var min_depth: float = 2.0 * pivot + ENDPOINT_MARGIN
 			depth  = maxf(cam_pos.distance_to(tip_hit.position) - ENDPOINT_MARGIN, min_depth)
 			anchor = cam_pos + cam_basis * Vector3(CARRY_OFFSET_X, CARRY_OFFSET_Y, -depth)
 
 		# ── Pivot-path transform (computed with post-ray depth) ───────────────
-		# Camera-local layout (O = carry offset):
-		#   tip    = (O.x,              O.y,              -depth)
-		#   butt   = (O.x + sway_pos.x, O.y + sway_pos.y, -depth + 2*pivot)
-		#   centre = midpoint
 		target_pos = cam_pos + cam_basis * Vector3(
 			CARRY_OFFSET_X + sway_pos.x * 0.5,
 			CARRY_OFFSET_Y + sway_pos.y * 0.5,
@@ -620,17 +651,12 @@ func _carry_update(delta: float):
 		)
 		var fwd_cam:   Vector3 = Vector3(-sway_pos.x, -sway_pos.y, -2.0 * pivot).normalized()
 		var fwd_world: Vector3 = cam_basis * fwd_cam
-		# up_ref is driven by _roll_angle (the independent spin DOF), not by sway
-		# position. Because _roll_angle accumulates velocity with low damping it
-		# can spin freely — no tidal locking with the butt's orbital position.
 		var up_ref: Vector3 = cam_basis * Vector3(-cos(_roll_angle), -sin(_roll_angle), 0.0)
 		if abs(fwd_world.dot(up_ref)) > 0.999:
 			up_ref = cam_basis.x
 		target_basis = Basis.looking_at(fwd_world, up_ref) * rotation_offset
 
 		# ── Ray 2: butt (close end) ───────────────────────────────────────────
-		# Prevents the butt from embedding into geometry behind the anchor.
-		# Because centre = (anchor + butt) / 2, butt = 2*centre - anchor.
 		var butt: Vector3 = 2.0 * target_pos - anchor
 		ray.from = anchor
 		ray.to   = butt
@@ -651,28 +677,27 @@ func _carry_update(delta: float):
 		target_basis = cam_basis * rotation_offset
 
 	# ── Centre sweep (all objects) ────────────────────────────────────────────
-	# Catches linear-motion penetration that the endpoint rays don't cover.
-	var motion: Vector3 = target_pos - held_object.global_position
-	_test_params.from   = held_object.global_transform
+	var motion: Vector3 = target_pos - _held_object.global_position
+	_test_params.from   = _held_object.global_transform
 	_test_params.motion = motion
-	if PhysicsServer3D.body_test_motion(held_object.get_rid(), _test_params, _test_result):
-		target_pos = held_object.global_position + _test_result.get_travel()
+	if PhysicsServer3D.body_test_motion(_held_object.get_rid(), _test_params, _test_result):
+		target_pos = _held_object.global_position + _test_result.get_travel()
 		# Pushback: weight-scaled force pushed back onto the player whenever M1
 		# is held and the object is blocked by geometry.
-		if punch_held:
+		if _punch_held:
 			var punch_dir: Vector3 = -camera.global_transform.basis.z
 			velocity -= punch_dir * w_pushback * delta
 
-	if punch_measuring:
-		var frame_speed: float = held_object.global_position.distance_to(target_pos) / delta
-		punch_peak_speed = maxf(punch_peak_speed, frame_speed)
+	if _punch_measuring:
+		var frame_speed: float = _held_object.global_position.distance_to(target_pos) / delta
+		_punch_peak_speed = maxf(_punch_peak_speed, frame_speed)
 
-	held_object.global_transform = Transform3D(target_basis, target_pos)
+	_held_object.global_transform = Transform3D(target_basis, target_pos)
 
 # ── Multiplayer RPCs ────────────────────────────────────────────────────────
 
 @rpc("any_peer", "reliable")
-func _sync_take_object(obj_path: String):
+func _rpc_take_object(obj_path: String):
 	var obj = get_tree().root.get_node_or_null(obj_path)
 	if obj is RigidBody3D:
 		obj.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
@@ -687,10 +712,10 @@ func _sync_take_object(obj_path: String):
 		if interactable:
 			interactable.is_held = true
 	else:
-		push_warning("[sync] _sync_take_object: node not found or unsupported type: %s" % obj_path)
+		push_warning("[player] _rpc_take_object: node not found or unsupported type: %s" % obj_path)
 
 @rpc("any_peer", "unreliable_ordered")
-func _sync_held_object(obj_path: String, xform: Transform3D):
+func _rpc_held_xform(obj_path: String, xform: Transform3D):
 	# Route through world's net-target table so the lerp system handles smoothing.
 	var world: Node = get_parent().get_parent()
 	if world and world.has_method("queue_net_target"):
@@ -701,7 +726,7 @@ func _sync_held_object(obj_path: String, xform: Transform3D):
 			obj.global_transform = xform
 
 @rpc("any_peer", "reliable")
-func _sync_release_object(obj_path: String, pos: Vector3, vel: Vector3, ang_vel: Vector3):
+func _rpc_drop_object(obj_path: String, pos: Vector3, vel: Vector3, ang_vel: Vector3):
 	var obj = get_tree().root.get_node_or_null(obj_path)
 	if obj is RigidBody3D:
 		obj.continuous_cd = true   # prevent tunnelling on all clients
@@ -720,16 +745,16 @@ func _sync_release_object(obj_path: String, pos: Vector3, vel: Vector3, ang_vel:
 		if interactable:
 			interactable.is_held = false
 	else:
-		push_warning("[sync] _sync_release_object: node not found: %s" % obj_path)
+		push_warning("[player] _rpc_drop_object: node not found: %s" % obj_path)
 
 @rpc("any_peer", "unreliable_ordered")
-func _sync_state(pos: Vector3, body_y: float, cam_x: float):
+func _rpc_player_state(pos: Vector3, body_y: float, cam_x: float):
 	_net_pos = pos; _net_rot_y = body_y; _net_cam_x = cam_x; _has_net_state = true
 
 ## Client sends punch impulse to the host; host applies it to the live physics
 ## object so the authoritative simulation drives the result.
 @rpc("any_peer", "reliable")
-func _sync_punch_impulse(obj_path: String, impulse: Vector3):
+func _rpc_punch_impulse(obj_path: String, impulse: Vector3):
 	if not multiplayer.is_server():
 		return
 	var obj = get_tree().root.get_node_or_null(obj_path)

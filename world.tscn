@@ -1,4 +1,4 @@
-[gd_scene load_steps=19 format=4 uid="uid://cuoar8pyen07f"]
+[gd_scene load_steps=18 format=4 uid="uid://cuoar8pyen07f"]
 
 [ext_resource type="Script" path="res://world.gd" id="3_worldg"]
 [ext_resource type="PackedScene" uid="uid://dio001scn01" path="res://Objects/adio.tscn" id="4_adio0"]
@@ -15,7 +15,7 @@ polygons = [PackedInt32Array(3, 2, 0), PackedInt32Array(0, 2, 1), PackedInt32Arr
 cell_size = 0.2
 cell_height = 0.2
 agent_height = 1.8
-agent_radius = 0.35
+agent_radius = 0.4
 agent_max_climb = 0.4
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_13lci"]
@@ -61,9 +61,6 @@ cell_size = 0.2
 cell_height = 0.2
 agent_height = 1.8
 agent_radius = 0.35
-
-[sub_resource type="BoxShape3D" id="BoxShape3D_floor"]
-size = Vector3(20, 0.5, 20)
 
 [sub_resource type="ConcavePolygonShape3D" id="ConcavePolygonShape3D_lbcf8"]
 data = PackedVector3Array(-10, 0, 10, 10, 0, -10, 10, 0, 10, -10, 0, 10, -10, 0, -10, 10, 0, -10, -10, 0, -10, 10, 2, -10, 10, 0, -10, -10, 0, -10, -10, 2, -10, 10, 2, -10, 10, 0, 10, -10, 2, 10, -10, 0, 10, 10, 0, 10, 10, 2, 10, -10, 2, 10, 10, 0, -10, 10, 2, 10, 10, 0, 10, 10, 0, -10, 10, 2, -10, 10, 2, 10, -10, 0, 10, -10, 2, -10, -10, 0, -10, -10, 0, 10, -10, 2, 10, -10, 2, -10)
@@ -141,10 +138,6 @@ navigation_mesh = SubResource("NavigationMesh_u02ju")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="NavigationRegion3D/Floor"]
 shape = SubResource("ConcavePolygonShape3D_lbcf8")
-
-[node name="FloorBox" type="CollisionShape3D" parent="NavigationRegion3D/Floor"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.25, 0)
-shape = SubResource("BoxShape3D_floor")
 
 [node name="Ramp" type="StaticBody3D" parent="NavigationRegion3D"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.26841, 8.34465e-07, -0.225595)

@@ -2,18 +2,29 @@ extends CanvasLayer
 
 signal action_chosen(action: String, target: Node)
 
-@onready var log_label = $ConnectionLog
+@onready var log_label    = $ConnectionLog
 @onready var pause_overlay = $PauseOverlay
-@onready var hover_label = $HoverLabel
-@onready var action_menu = $ActionMenu
+@onready var hover_label  = $HoverLabel
+@onready var action_menu  = $ActionMenu
 @onready var action_name_label = $ActionMenu/VBox/NameLabel
-@onready var action_buttons = $ActionMenu/VBox/Buttons
+@onready var action_buttons    = $ActionMenu/VBox/Buttons
 
-var _action_target: Node = null
-var _local_player: Node = null
-var _info_popup: Control = null
-var _tune_popup: Control = null
-var _tune_holdable: Holdable = null
+var _action_target:  Node     = null
+var _local_player:   Node     = null
+var _info_popup:     Control  = null
+var _tune_popup:     Control  = null
+var _tune_holdable:  Holdable = null
+
+# ── Spawn mode ───────────────────────────────────────────────────────────────
+var _pending_spawn: String = ""   # scene path queued for placement; "" = inactive
+var _spawn_label:   Label  = null
+
+# ── Dev panel state ──────────────────────────────────────────────────────────
+var _tab_bar:     Control    = null   # button strip shown only in tab mode
+var _dev_panel:   Control    = null   # the floating dev tools window
+var _dev_sections: Dictionary = {}    # section_id → content VBoxContainer
+
+# ── Tunable constants ────────────────────────────────────────────────────────
 
 const _SETTINGS = [
 	{"group": "Movement"},
@@ -24,8 +35,11 @@ const _SETTINGS = [
 	{"prop": "SLIDE_FRICTION",   "label": "Slide Friction", "min": 0.0,    "max": 20.0,  "step": 0.5},
 ]
 
-# Physics params exposed per weight class in the pause-menu settings panel.
-# Each entry maps to a key in Holdable._WEIGHT_PHYSICS[i].
+const _SPAWNABLE = [
+	{"label": "Stick",    "scene": "res://Objects/stick.tscn"},
+	{"label": "Mushroom", "scene": "res://Objects/mushroom.tscn"},
+]
+
 const _WEIGHT_PARAMS = [
 	{"key": "sway_mouse_scale",  "label": "Mouse Scale",      "min": 0.0,   "max": 0.05,  "step": 0.001},
 	{"key": "sway_damping",      "label": "Sway Damping",     "min": 0.0,   "max": 2.0,   "step": 0.05},
@@ -41,11 +55,14 @@ const _WEIGHT_PARAMS = [
 	{"key": "punch_pushback",    "label": "Punch Pushback",   "min": 0.0,   "max": 60.0,  "step": 1.0},
 ]
 
+# ── Lifecycle ────────────────────────────────────────────────────────────────
+
 func _ready():
-	$PauseOverlay/CenterContainer.hide()
 	var transparent = StyleBoxFlat.new()
 	transparent.bg_color = Color.TRANSPARENT
 	$PauseOverlay.add_theme_stylebox_override("panel", transparent)
+	$PauseOverlay/CenterContainer/VBoxContainer/ResumeButton.pressed.connect(_toggle_pause)
+	$PauseOverlay/CenterContainer/VBoxContainer/QuitButton.pressed.connect(_quit_to_menu)
 	_add_role_label()
 
 func _add_role_label():
@@ -56,97 +73,235 @@ func _add_role_label():
 		label.text = "HOST"
 	else:
 		label.text = "CLIENT"
-	label.anchor_left = 1.0
-	label.anchor_right = 1.0
-	label.anchor_top = 0.0
+	label.anchor_left   = 1.0
+	label.anchor_right  = 1.0
+	label.anchor_top    = 0.0
 	label.anchor_bottom = 0.0
-	label.offset_left = -110
-	label.offset_right = -10
-	label.offset_top = 10
+	label.offset_left   = -110
+	label.offset_right  = -10
+	label.offset_top    = 10
 	label.offset_bottom = 40
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(label)
 
+# Called by world.gd after local player is ready.
 func set_local_player(player: Node):
 	_local_player = player
-	_build_settings()
+	_build_tab_bar()
+	_build_dev_panel()
 
-func _on_setting_changed(value: float, prop: String, val_lbl: Label) -> void:
-	_local_player.set(prop, value)
-	val_lbl.text = str(value)
+# ── Tab mode ─────────────────────────────────────────────────────────────────
 
-func _build_settings():
-	if pause_overlay.get_node_or_null("SettingsPanel"):
+## Called by player.gd whenever tab mode is toggled.
+func set_tab_mode(active: bool) -> void:
+	if _tab_bar:
+		_tab_bar.visible = active
+	# Close the dev panel when leaving tab mode.
+	if not active and _dev_panel:
+		_dev_panel.visible = false
+
+func _build_tab_bar() -> void:
+	if _tab_bar:
 		return
-	var panel = PanelContainer.new()
-	panel.name = "SettingsPanel"
-	panel.anchor_left = 0.5
-	panel.anchor_right = 0.5
-	panel.anchor_top = 0.5
-	panel.anchor_bottom = 0.5
-	panel.offset_left = -230.0
-	panel.offset_right = 230.0
-	panel.offset_top = -300.0
-	panel.offset_bottom = 300.0
-	pause_overlay.add_child(panel)
+	# Vertical strip of tab-mode buttons, top-right corner, below the role label.
+	var bar = VBoxContainer.new()
+	bar.visible       = false
+	bar.anchor_left   = 1.0
+	bar.anchor_right  = 1.0
+	bar.anchor_top    = 0.0
+	bar.anchor_bottom = 0.0
+	bar.offset_left   = -90.0
+	bar.offset_right  = -10.0
+	bar.offset_top    = 50.0
+	bar.offset_bottom = 300.0
 
-	var outer_vbox = VBoxContainer.new()
-	outer_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	outer_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	panel.add_child(outer_vbox)
+	var dev_btn = Button.new()
+	dev_btn.text = "Dev"
+	dev_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dev_btn.pressed.connect(_toggle_dev_panel)
+	bar.add_child(dev_btn)
+
+	add_child(bar)
+	_tab_bar = bar
+
+# ── Dev panel ────────────────────────────────────────────────────────────────
+
+func _toggle_dev_panel() -> void:
+	if _dev_panel:
+		_dev_panel.visible = not _dev_panel.visible
+
+func _build_dev_panel() -> void:
+	if _dev_panel:
+		return
+
+	var panel = PanelContainer.new()
+	panel.visible       = false
+	panel.anchor_left   = 0.5
+	panel.anchor_right  = 0.5
+	panel.anchor_top    = 0.5
+	panel.anchor_bottom = 0.5
+	panel.offset_left   = -290.0
+	panel.offset_right  =  290.0
+	panel.offset_top    = -300.0
+	panel.offset_bottom =  300.0
+
+	var outer = VBoxContainer.new()
+	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.size_flags_vertical   = Control.SIZE_EXPAND_FILL
+	panel.add_child(outer)
+
+	# ── Header row ───────────────────────────────────────────────────────────
+	var header = HBoxContainer.new()
+	outer.add_child(header)
+
+	var title = Label.new()
+	title.text = "DEV TOOLS"
+	title.add_theme_font_size_override("font_size", 15)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(title)
+
+	var close_btn = Button.new()
+	close_btn.text = "✕"
+	close_btn.flat = true
+	close_btn.pressed.connect(func(): panel.visible = false)
+	header.add_child(close_btn)
+
+	outer.add_child(HSeparator.new())
+
+	# ── Body: left sidebar + right content ────────────────────────────────────
+	var body = HBoxContainer.new()
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(body)
+
+	var sidebar = VBoxContainer.new()
+	sidebar.custom_minimum_size = Vector2(100, 0)
+	sidebar.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	body.add_child(sidebar)
+
+	body.add_child(VSeparator.new())
 
 	var scroll = ScrollContainer.new()
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal  = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical    = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	outer_vbox.add_child(scroll)
+	body.add_child(scroll)
 
-	var settings_vbox = VBoxContainer.new()
-	settings_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(settings_vbox)
+	var stack = VBoxContainer.new()
+	stack.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(stack)
 
+	# ── Register sections ─────────────────────────────────────────────────────
+	# Add new sections here as the dev toolset grows.
+	_dev_sections = {}
+	_add_dev_section(sidebar, stack, "settings", "Settings", _build_settings_section)
+	_add_dev_section(sidebar, stack, "spawn",    "Spawn",    _build_spawn_section)
+
+	_activate_dev_section("settings")
+
+	add_child(panel)
+	_dev_panel = panel
+
+## Registers a named section: adds a sidebar button and builds its content.
+## `builder` receives the section's VBoxContainer and populates it.
+func _add_dev_section(sidebar: VBoxContainer, stack: VBoxContainer,
+		id: String, label: String, builder: Callable) -> void:
+	var section = VBoxContainer.new()
+	section.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	section.visible = false
+	stack.add_child(section)
+	builder.call(section)
+	_dev_sections[id] = section
+
+	var btn = Button.new()
+	btn.text = label
+	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	btn.pressed.connect(_activate_dev_section.bind(id))
+	sidebar.add_child(btn)
+
+func _activate_dev_section(id: String) -> void:
+	for key in _dev_sections:
+		_dev_sections[key].visible = (key == id)
+
+# ── Spawn section ────────────────────────────────────────────────────────────
+
+func _build_spawn_section(vbox: VBoxContainer) -> void:
+	for entry in _SPAWNABLE:
+		var btn = Button.new()
+		btn.text = entry["label"]
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.pressed.connect(_on_spawn_btn_pressed.bind(entry["scene"], entry["label"]))
+		vbox.add_child(btn)
+
+func _on_spawn_btn_pressed(scene_path: String, display_name: String) -> void:
+	_pending_spawn = scene_path
+	_dev_panel.visible = false
+	_show_spawn_hint(display_name)
+
+func _show_spawn_hint(display_name: String) -> void:
+	if _spawn_label == null:
+		_spawn_label = Label.new()
+		_spawn_label.anchor_left   = 0.5
+		_spawn_label.anchor_right  = 0.5
+		_spawn_label.anchor_top    = 0.0
+		_spawn_label.anchor_bottom = 0.0
+		_spawn_label.offset_left   = -300.0
+		_spawn_label.offset_right  =  300.0
+		_spawn_label.offset_top    = 10.0
+		_spawn_label.offset_bottom = 34.0
+		_spawn_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_spawn_label.mouse_filter  = Control.MOUSE_FILTER_IGNORE
+		add_child(_spawn_label)
+	_spawn_label.text    = "Spawning: %s  ·  Click surface to place  ·  Right-click to cancel" % display_name
+	_spawn_label.visible = true
+
+func cancel_pending_spawn() -> void:
+	_pending_spawn = ""
+	if _spawn_label:
+		_spawn_label.visible = false
+
+# ── Settings section ─────────────────────────────────────────────────────────
+
+func _build_settings_section(vbox: VBoxContainer) -> void:
 	for entry in _SETTINGS:
 		if entry.has("group"):
 			var group_lbl = Label.new()
 			group_lbl.text = "— " + entry["group"] + " —"
 			group_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-			settings_vbox.add_child(group_lbl)
+			vbox.add_child(group_lbl)
 			continue
 
 		var row = HBoxContainer.new()
-		settings_vbox.add_child(row)
+		vbox.add_child(row)
 
 		var name_lbl = Label.new()
 		name_lbl.text = entry["label"]
-		name_lbl.custom_minimum_size = Vector2(150, 0)
-		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_lbl.custom_minimum_size    = Vector2(130, 0)
+		name_lbl.size_flags_horizontal  = Control.SIZE_EXPAND_FILL
 		row.add_child(name_lbl)
 
 		var slider = HSlider.new()
-		slider.min_value = entry["min"]
-		slider.max_value = entry["max"]
-		slider.step = entry["step"]
-		slider.value = _local_player.get(entry["prop"])
-		slider.custom_minimum_size = Vector2(180, 0)
+		slider.min_value          = entry["min"]
+		slider.max_value          = entry["max"]
+		slider.step               = entry["step"]
+		slider.value              = _local_player.get(entry["prop"])
+		slider.custom_minimum_size = Vector2(150, 0)
 		row.add_child(slider)
 
 		var val_lbl = Label.new()
-		val_lbl.text = str(slider.value)
-		val_lbl.custom_minimum_size = Vector2(60, 0)
-		val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		val_lbl.text                   = str(slider.value)
+		val_lbl.custom_minimum_size    = Vector2(60, 0)
+		val_lbl.horizontal_alignment   = HORIZONTAL_ALIGNMENT_RIGHT
 		row.add_child(val_lbl)
 
 		slider.value_changed.connect(_on_setting_changed.bind(entry["prop"], val_lbl))
 
-	_build_weight_settings(settings_vbox)
+	_build_weight_settings(vbox)
 
-	outer_vbox.add_child(HSeparator.new())
-
-	var quit_btn = Button.new()
-	quit_btn.text = "Quit to Menu"
-	quit_btn.pressed.connect(_quit_to_menu)
-	outer_vbox.add_child(quit_btn)
+func _on_setting_changed(value: float, prop: String, val_lbl: Label) -> void:
+	_local_player.set(prop, value)
+	val_lbl.text = str(value)
 
 func _build_weight_settings(vbox: VBoxContainer) -> void:
 	var weight_names = ["Light", "Medium", "Heavy"]
@@ -162,21 +317,21 @@ func _build_weight_settings(vbox: VBoxContainer) -> void:
 
 			var name_lbl = Label.new()
 			name_lbl.text = param["label"]
-			name_lbl.custom_minimum_size = Vector2(150, 0)
+			name_lbl.custom_minimum_size   = Vector2(130, 0)
 			name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			row.add_child(name_lbl)
 
 			var slider = HSlider.new()
-			slider.min_value = param["min"]
-			slider.max_value = param["max"]
-			slider.step      = param["step"]
-			slider.value     = Holdable._WEIGHT_PHYSICS[i].get(param["key"], 0.0)
-			slider.custom_minimum_size = Vector2(180, 0)
+			slider.min_value          = param["min"]
+			slider.max_value          = param["max"]
+			slider.step               = param["step"]
+			slider.value              = Holdable._WEIGHT_PHYSICS[i].get(param["key"], 0.0)
+			slider.custom_minimum_size = Vector2(150, 0)
 			row.add_child(slider)
 
 			var val_lbl = Label.new()
-			val_lbl.text = str(slider.value)
-			val_lbl.custom_minimum_size = Vector2(60, 0)
+			val_lbl.text                 = str(slider.value)
+			val_lbl.custom_minimum_size  = Vector2(60, 0)
 			val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 			row.add_child(val_lbl)
 
@@ -186,6 +341,8 @@ func _on_weight_setting_changed(value: float, weight_idx: int, key: String, val_
 	Holdable.save_weight_physics(weight_idx, key, value)
 	val_lbl.text = str(value)
 
+# ── Input handling ───────────────────────────────────────────────────────────
+
 func _unhandled_input(event):
 	if event.is_action_pressed("ui_cancel"):
 		if _tune_popup != null:
@@ -194,6 +351,14 @@ func _unhandled_input(event):
 		if _info_popup != null:
 			hide_info_popup()
 			return
+		# Cancel an active spawn before reaching the dev panel / pause toggle.
+		if not _pending_spawn.is_empty():
+			cancel_pending_spawn()
+			return
+		# Close the dev panel before reaching the pause toggle.
+		if _dev_panel != null and _dev_panel.visible:
+			_dev_panel.visible = false
+			return
 		_toggle_pause()
 
 func _toggle_pause():
@@ -201,23 +366,33 @@ func _toggle_pause():
 	pause_overlay.visible = showing
 	if showing:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-	elif not (_local_player and _local_player.get("tab_mode")):
+	elif not (_local_player and _local_player.get("_tab_mode")):
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 func _quit_to_menu():
 	multiplayer.multiplayer_peer = null
 	get_tree().change_scene_to_file("res://menu.tscn")
 
+func _notification(what):
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+# ── Log ──────────────────────────────────────────────────────────────────────
+
 func add_log(msg: String):
 	log_label.append_text(msg + "\n")
 
+# ── Hover label ──────────────────────────────────────────────────────────────
+
 func show_hover_label(screen_pos: Vector2, text: String):
-	hover_label.text = "[" + text + "]"
+	hover_label.text     = "[" + text + "]"
 	hover_label.position = screen_pos + Vector2(14, -24)
-	hover_label.visible = true
+	hover_label.visible  = true
 
 func hide_hover_label():
 	hover_label.visible = false
+
+# ── Action menu ──────────────────────────────────────────────────────────────
 
 func show_action_menu(screen_pos: Vector2, target: Node, display_name: String, actions: Array[String]):
 	hide_info_popup()
@@ -232,7 +407,7 @@ func show_action_menu(screen_pos: Vector2, target: Node, display_name: String, a
 		btn.pressed.connect(_on_action_pressed.bind(action))
 		action_buttons.add_child(btn)
 	action_menu.position = screen_pos - Vector2(action_menu.custom_minimum_size.x * 0.5, action_menu.size.y + 16)
-	action_menu.visible = true
+	action_menu.visible  = true
 
 func hide_action_menu():
 	action_menu.visible = false
@@ -246,11 +421,7 @@ func _on_action_pressed(action: String):
 	hide_action_menu()
 	action_chosen.emit(action, target)
 
-func _notification(what):
-	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
-		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-
-# ── Info popup ──────────────────────────────────────────────────────────────
+# ── Info popup ───────────────────────────────────────────────────────────────
 
 func show_info_popup(interactable: Interactable, target: Node) -> void:
 	hide_info_popup()
@@ -269,7 +440,7 @@ func show_info_popup(interactable: Interactable, target: Node) -> void:
 	vbox.add_theme_constant_override("separation", 8)
 	popup.add_child(vbox)
 
-	# ── Header: name (left) + weight tag (right, small italic) ──────────────
+	# Header: name (left) + weight tag (right)
 	var header = HBoxContainer.new()
 	vbox.add_child(header)
 
@@ -279,7 +450,6 @@ func show_info_popup(interactable: Interactable, target: Node) -> void:
 	name_lbl.add_theme_font_size_override("font_size", 18)
 	header.add_child(name_lbl)
 
-	# Weight tag — only shown for objects that have a Holdable component
 	var holdable: Holdable = null
 	for child in target.get_children():
 		if child is Holdable:
@@ -290,7 +460,7 @@ func show_info_popup(interactable: Interactable, target: Node) -> void:
 		var weight_lbl = Label.new()
 		weight_lbl.text = weight_names[holdable.weight]
 		weight_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		weight_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		weight_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
 		weight_lbl.size_flags_horizontal = Control.SIZE_SHRINK_END
 		weight_lbl.add_theme_font_size_override("font_size", 11)
 		weight_lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.60))
@@ -299,27 +469,23 @@ func show_info_popup(interactable: Interactable, target: Node) -> void:
 
 	vbox.add_child(HSeparator.new())
 
-	# ── Description (scrollable) ─────────────────────────────────────────────
 	var scroll = ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical    = Control.SIZE_EXPAND_FILL
 	vbox.add_child(scroll)
 
 	var desc = RichTextLabel.new()
 	desc.bbcode_enabled = true
-	desc.fit_content = true
-	desc.scroll_active = false
+	desc.fit_content    = true
+	desc.scroll_active  = false
 	desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	desc.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	if interactable.description.is_empty():
-		desc.text = "[color=#888888][i]No description available.[/i][/color]"
-	else:
-		desc.text = interactable.description
+	desc.mouse_filter   = Control.MOUSE_FILTER_IGNORE
+	desc.text = "[color=#888888][i]No description available.[/i][/color]" \
+		if interactable.description.is_empty() else interactable.description
 	scroll.add_child(desc)
 
 	vbox.add_child(HSeparator.new())
 
-	# ── Close button (right-aligned) ─────────────────────────────────────────
 	var btn_row = HBoxContainer.new()
 	vbox.add_child(btn_row)
 	var spacer = Control.new()
@@ -349,7 +515,7 @@ func show_tune_popup(target: Node) -> void:
 	var holdable: Holdable = null
 	var interactable: Interactable = null
 	for child in target.get_children():
-		if child is Holdable:    holdable = child
+		if child is Holdable:       holdable = child
 		elif child is Interactable: interactable = child
 	if not holdable:
 		return
@@ -369,7 +535,6 @@ func show_tune_popup(target: Node) -> void:
 	vbox.add_theme_constant_override("separation", 6)
 	popup.add_child(vbox)
 
-	# ── Header ────────────────────────────────────────────────────────────────
 	var header = HBoxContainer.new()
 	vbox.add_child(header)
 
@@ -381,8 +546,8 @@ func show_tune_popup(target: Node) -> void:
 
 	var tag_lbl = Label.new()
 	tag_lbl.text = "tune"
-	tag_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	tag_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	tag_lbl.horizontal_alignment  = HORIZONTAL_ALIGNMENT_RIGHT
+	tag_lbl.vertical_alignment    = VERTICAL_ALIGNMENT_CENTER
 	tag_lbl.size_flags_horizontal = Control.SIZE_SHRINK_END
 	tag_lbl.add_theme_font_size_override("font_size", 11)
 	tag_lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.60))
@@ -391,10 +556,9 @@ func show_tune_popup(target: Node) -> void:
 
 	vbox.add_child(HSeparator.new())
 
-	# ── Field rows (scrollable) ───────────────────────────────────────────────
 	var scroll = ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical    = Control.SIZE_EXPAND_FILL
 	vbox.add_child(scroll)
 
 	var content_vbox = VBoxContainer.new()
@@ -435,7 +599,6 @@ func show_tune_popup(target: Node) -> void:
 
 	vbox.add_child(HSeparator.new())
 
-	# ── Close button ──────────────────────────────────────────────────────────
 	var btn_row = HBoxContainer.new()
 	vbox.add_child(btn_row)
 	var spacer = Control.new()
