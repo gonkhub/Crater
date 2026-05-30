@@ -23,9 +23,10 @@ var ROLL_DAMPING = 0.08       # axial-spin damping — much lower so spin coasts
 var SWAY_MOUSE_SCALE = 0.008  # pixels → angular velocity (rad/s, scaled by 1/pivot)
 var ENDPOINT_MARGIN = 0.06    # minimum clearance between object endpoints and surfaces
 
-var _sliding  := false
-var _tab_mode := false
-var _noclip   := false
+var _sliding       := false
+var _tab_mode      := false
+var _alt_grab_mode := false   # true while LAlt is held; cursor visible for immediate grab
+var _noclip        := false
 var _sway_angle: float = -PI / 2.0   # position of close end on the circle (−½π = bottom)
 var _sway_ang_vel: float = 0.0       # position angular velocity (rad/s)
 var _sway_target:    float = -PI / 2.0  # spring target angle
@@ -113,7 +114,7 @@ func _process(delta):
 		_update_held_object(delta)
 	if not _hud:
 		return
-	if not _tab_mode:
+	if not _tab_mode and not _alt_grab_mode:
 		_hud.hide_hover_label()
 		return
 	var mouse_pos = get_viewport().get_mouse_position()
@@ -123,11 +124,20 @@ func _process(delta):
 	params.exclude = [get_rid()]
 	var hit = get_world_3d().direct_space_state.intersect_ray(params)
 	if hit:
-		var interactable = _find_interactable(hit.collider)
-		if interactable:
-			_hud.show_hover_label(mouse_pos, interactable.display_name)
+		if _alt_grab_mode:
+			# In alt-grab mode only highlight holdable objects (non-holdables do nothing).
+			var holdable = _find_holdable(hit.collider)
+			if holdable:
+				var interactable = _find_interactable(hit.collider)
+				_hud.show_hover_label(mouse_pos, interactable.display_name if interactable else hit.collider.name)
+			else:
+				_hud.hide_hover_label()
 		else:
-			_hud.show_hover_label(mouse_pos, hit.collider.name + " (no tag)")
+			var interactable = _find_interactable(hit.collider)
+			if interactable:
+				_hud.show_hover_label(mouse_pos, interactable.display_name)
+			else:
+				_hud.show_hover_label(mouse_pos, hit.collider.name + " (no tag)")
 	else:
 		_hud.hide_hover_label()
 
@@ -135,8 +145,8 @@ func _unhandled_input(event):
 	if not is_multiplayer_authority():
 		return
 
-	# Click to recapture mouse when free (not in tab mode)
-	if event is InputEventMouseButton and event.pressed and not _tab_mode:
+	# Click to recapture mouse when free (not in tab mode or alt-grab mode)
+	if event is InputEventMouseButton and event.pressed and not _tab_mode and not _alt_grab_mode:
 		if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
 			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 			return
@@ -159,9 +169,11 @@ func _unhandled_input(event):
 				_punch_held = false
 				return
 
-	# Tab: toggle HUD interact mode
+	# Tab: toggle HUD interact mode (disabled while alt-grab is active)
 	if event is InputEventKey and not event.echo and event.pressed:
 		if event.physical_keycode == KEY_TAB:
+			if _alt_grab_mode:
+				return
 			_tab_mode = !_tab_mode
 			if _hud:
 				_hud.hide_action_menu()
@@ -172,6 +184,27 @@ func _unhandled_input(event):
 				Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 			elif not (_hud and _hud.pause_overlay.visible):
 				Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+			return
+
+	# LAlt: hold to unlock cursor for immediate object grab.
+	# Disabled in tab mode; disabled while already holding an object.
+	if event is InputEventKey and not event.echo:
+		if event.physical_keycode == KEY_ALT:
+			if event.pressed:
+				if not _tab_mode and not _held_object:
+					_alt_grab_mode = true
+					Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+			else:
+				if _alt_grab_mode:
+					_alt_grab_mode = false
+					if not (_tab_mode or (_hud and _hud.pause_overlay.visible)):
+						Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+			return
+
+	# LAlt grab click: immediately take the holdable under the cursor.
+	if _alt_grab_mode and event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+			_alt_grab_at_cursor()
 			return
 
 	# Mouse look (only when captured)
@@ -287,44 +320,6 @@ func _find_holdable(node: Node) -> Holdable:
 
 func _on_action_chosen(action: String, target: Node):
 	match action:
-		"Take":
-			var holdable = _find_holdable(target)
-			if target is RigidBody3D and holdable:
-				_held_object = target
-				_held_object.add_collision_exception_with(self)
-				add_collision_exception_with(_held_object)
-				_held_object.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
-				_held_object.freeze = true
-				_held_interactable = _find_interactable(target)
-				_held_holdable = holdable
-				if _held_interactable:
-					_held_interactable.is_held = true
-				if _is_peer_connected():
-					_rpc_take_object.rpc(str(_held_object.get_path()))
-				_tab_mode = false
-				if _hud:
-					_hud.set_tab_mode(false)
-				if not (_hud and _hud.pause_overlay.visible):
-					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
-				AudioManager.play_pickup()
-			elif target is CharacterBody3D and holdable:
-				_held_object = target
-				_held_object.add_collision_exception_with(self)
-				add_collision_exception_with(_held_object)
-				_held_interactable = _find_interactable(target)
-				_held_holdable = holdable
-				if target.is_multiplayer_authority():
-					target.set_physics_process(false)
-				if _held_interactable:
-					_held_interactable.is_held = true
-				if _is_peer_connected():
-					_rpc_take_object.rpc(str(_held_object.get_path()))
-				_tab_mode = false
-				if _hud:
-					_hud.set_tab_mode(false)
-				if not (_hud and _hud.pause_overlay.visible):
-					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
-				AudioManager.play_pickup()
 		"Info":
 			var interactable = _find_interactable(target)
 			if interactable and _hud:
@@ -333,6 +328,64 @@ func _on_action_chosen(action: String, target: Node):
 			var interactable = _find_interactable(target)
 			if interactable:
 				interactable.action_performed.emit(action, self)
+
+## Immediately takes the physics body. Called from the Tab action menu path (via
+## _on_action_chosen) and the LAlt direct-grab path (_alt_grab_at_cursor).
+func _take_object(body: PhysicsBody3D) -> void:
+	if _held_object:
+		return
+	var holdable := _find_holdable(body)
+	if not holdable:
+		return
+	var interactable := _find_interactable(body)
+	if interactable and interactable.is_held:
+		return
+
+	_held_object = body
+	_held_object.add_collision_exception_with(self)
+	add_collision_exception_with(_held_object)
+	_held_holdable     = holdable
+	_held_interactable = interactable
+
+	if body is RigidBody3D:
+		body.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+		body.freeze      = true
+	elif body is CharacterBody3D:
+		if body.is_multiplayer_authority():
+			body.set_physics_process(false)
+
+	if _held_interactable:
+		_held_interactable.is_held       = true
+		_held_interactable.last_holder_id = multiplayer.get_unique_id()
+
+	if _is_peer_connected():
+		_rpc_take_object.rpc(str(body.get_path()), multiplayer.get_unique_id())
+
+	_alt_grab_mode = false
+	_tab_mode      = false
+	if _hud:
+		_hud.set_tab_mode(false)
+	if not (_hud and _hud.pause_overlay.visible):
+		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+	AudioManager.play_pickup()
+
+## Fires a raycast from the cursor and immediately takes the first holdable hit.
+## Used by the LAlt grab path.
+func _alt_grab_at_cursor() -> void:
+	var mouse_pos := get_viewport().get_mouse_position()
+	var origin    := camera.project_ray_origin(mouse_pos)
+	var ray_end   := origin + camera.project_ray_normal(mouse_pos) * INTERACT_RANGE
+	var params    := PhysicsRayQueryParameters3D.create(origin, ray_end)
+	params.exclude = [get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(params)
+	if not hit:
+		return
+	var body: Node = hit.collider
+	while body and not (body is RigidBody3D or body is CharacterBody3D):
+		body = body.get_parent()
+	if not body:
+		return
+	_take_object(body as PhysicsBody3D)
 
 func _clear_hold_state():
 	if is_instance_valid(_held_object):
@@ -786,20 +839,22 @@ func _execute_despawn_at_cursor() -> void:
 # ── Multiplayer RPCs ────────────────────────────────────────────────────────
 
 @rpc("any_peer", "reliable")
-func _rpc_take_object(obj_path: String):
+func _rpc_take_object(obj_path: String, holder_id: int):
 	var obj = get_tree().root.get_node_or_null(obj_path)
 	if obj is RigidBody3D:
 		obj.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
 		obj.freeze = true
 		var interactable = _find_interactable(obj)
 		if interactable:
-			interactable.is_held = true
+			interactable.is_held       = true
+			interactable.last_holder_id = holder_id
 	elif obj is CharacterBody3D:
 		if obj.is_multiplayer_authority():
 			obj.set_physics_process(false)
 		var interactable = _find_interactable(obj)
 		if interactable:
-			interactable.is_held = true
+			interactable.is_held       = true
+			interactable.last_holder_id = holder_id
 	else:
 		push_warning("[player] _rpc_take_object: node not found or unsupported type: %s" % obj_path)
 

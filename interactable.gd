@@ -26,6 +26,9 @@ signal action_performed(action: String, by_player: Node)
 
 # Set by the player holding this object; prevents others from taking it.
 var is_held: bool = false
+# Peer ID of the last player to hold this object. Set on Take; persists after drop.
+# Used by the incinerator to credit the correct player on incineration.
+var last_holder_id: int = -1
 
 func _ready():
 	# "Info" is available on every interactable.

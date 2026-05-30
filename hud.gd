@@ -54,8 +54,9 @@ const _SETTINGS = [
 ]
 
 const _SPAWNABLE = [
-	{"label": "Stick",    "scene": "res://Objects/stick.tscn"},
-	{"label": "Mushroom", "scene": "res://Objects/mushroom.tscn"},
+	{"label": "Stick",       "scene": "res://Objects/stick.tscn"},
+	{"label": "Mushroom",    "scene": "res://Objects/mushroom.tscn"},
+	{"label": "Incinerator", "scene": "res://Objects/incinerator.tscn"},
 ]
 
 const _HOLD_SWAY_PARAMS = [
@@ -203,6 +204,8 @@ func _build_dev_sidebar() -> void:
 
 	_dev_windows  = {}
 	_dev_win_open = {}
+	_add_dev_section(buttons, "scores",   "Scores",   _build_scores_section)
+	buttons.add_child(HSeparator.new())
 	_add_dev_section(buttons, "player",   "Player",   _build_player_section)
 	_add_dev_section(buttons, "world",    "World",    _build_world_section)
 	_add_dev_section(buttons, "settings", "Settings", _build_settings_section)
@@ -967,6 +970,71 @@ func _build_tune_content(content: VBoxContainer, holdable: Holdable) -> void:
 								axis_spins[2].value
 							))
 					)
+
+# ── Scores section ───────────────────────────────────────────────────────────
+
+func _build_scores_section(vbox: VBoxContainer) -> void:
+	var score_labels: Dictionary = {}   # peer_id → score Label
+
+	var header_row := HBoxContainer.new()
+	vbox.add_child(header_row)
+	var name_hdr := Label.new()
+	name_hdr.text = "Player"
+	name_hdr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_hdr.add_theme_color_override("font_color", Color(0.55, 0.75, 0.55))
+	name_hdr.add_theme_font_size_override("font_size", 11)
+	header_row.add_child(name_hdr)
+	var score_hdr := Label.new()
+	score_hdr.text = "Score"
+	score_hdr.custom_minimum_size = Vector2(60, 0)
+	score_hdr.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	score_hdr.add_theme_color_override("font_color", Color(0.55, 0.75, 0.55))
+	score_hdr.add_theme_font_size_override("font_size", 11)
+	header_row.add_child(score_hdr)
+	vbox.add_child(HSeparator.new())
+
+	var add_row := func(pid: int, pts: int) -> void:
+		if not is_instance_valid(vbox):
+			return
+		var row := HBoxContainer.new()
+		row.name = "row_%d" % pid
+		vbox.add_child(row)
+		var name_lbl := Label.new()
+		name_lbl.text = "P%d" % pid
+		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(name_lbl)
+		var pts_lbl := Label.new()
+		pts_lbl.text = str(pts)
+		pts_lbl.custom_minimum_size = Vector2(60, 0)
+		pts_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		row.add_child(pts_lbl)
+		score_labels[pid] = pts_lbl
+
+	# Populate players who are already registered.
+	for pid in ScoreManager.get_scores():
+		add_row.call(pid, ScoreManager.get_score(pid))
+
+	# Live updates.
+	ScoreManager.player_registered.connect(func(pid: int) -> void:
+		if not is_instance_valid(vbox) or score_labels.has(pid):
+			return
+		add_row.call(pid, 0)
+	)
+	ScoreManager.player_unregistered.connect(func(pid: int) -> void:
+		if not score_labels.has(pid):
+			return
+		var lbl: Label = score_labels.get(pid)
+		if is_instance_valid(lbl):
+			lbl.get_parent().queue_free()
+		score_labels.erase(pid)
+	)
+	ScoreManager.score_updated.connect(func(pid: int, new_score: int) -> void:
+		if not score_labels.has(pid):
+			return
+		var lbl: Label = score_labels.get(pid)
+		if is_instance_valid(lbl):
+			lbl.text = str(new_score)
+	)
 
 # ── Per-frame update (weather readout) ───────────────────────────────────────
 

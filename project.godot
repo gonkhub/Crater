@@ -19,6 +19,7 @@ config/icon="res://icon.svg"
 
 TimeSystem="*res://time_system.gd"
 AudioManager="*res://audio_manager.gd"
+ScoreManager="*res://score_manager.gd"
 
 [input]
 

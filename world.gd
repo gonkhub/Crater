@@ -19,6 +19,7 @@ var _spawn_counter:   int   = 0
 var _spawned_objects: Array = []   # [{scene, name}] — used for late-join sync
 
 func _ready():
+	add_to_group("world_root")
 	hud = preload("res://hud.tscn").instantiate()
 	add_child(hud)
 
@@ -139,6 +140,7 @@ func _on_client_connected():
 		if obj and is_instance_valid(obj):
 			_rpc_recv_spawn.rpc_id(id, entry["scene"], obj.global_transform, entry["name"])
 	_sync_world_to_peer(id)
+	ScoreManager.sync_to_peer(id)
 	hud.add_log("Player %d joined." % id)
 	_broadcast_log.rpc("Player %d joined." % id)
 
@@ -175,11 +177,13 @@ func _instantiate_player(id: int):
 		or id == multiplayer.get_unique_id()
 	if is_local:
 		player.init_local(hud)
+	ScoreManager.register_player(id)
 
 func _remove_player(id: int):
 	var node = $Players.get_node_or_null(str(id))
 	if node:
 		node.queue_free()
+	ScoreManager.unregister_player(id)
 
 # ── Late-join world state sync ──────────────────────────────────────────────
 
