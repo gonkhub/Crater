@@ -28,8 +28,7 @@ signal action_performed(action: String, by_player: Node)
 var is_held: bool = false
 
 func _ready():
-	# "Tune" and "Info" are available on every interactable — Tune first, Info last.
-	if "Tune" not in actions:
-		actions.append("Tune")
+	# "Info" is available on every interactable.
+	# "Tune" has moved to the Dev sidebar — no longer auto-registered here.
 	if "Info" not in actions:
 		actions.append("Info")
