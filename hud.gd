@@ -26,14 +26,15 @@ var _despawn_label: Label = null
 # ── FPS overlay ───────────────────────────────────────────────────────────────
 var _fps_label: Label = null
 
-# ── Dev panel drag state ──────────────────────────────────────────────────────
+# ── Dev drag state ───────────────────────────────────────────────────────────
 var _dev_drag_active: bool    = false
 var _dev_drag_offset: Vector2 = Vector2.ZERO
+var _dev_drag_target: Control = null   # which panel is currently being dragged
 
-# ── Dev panel state ──────────────────────────────────────────────────────────
-var _tab_bar:     Control    = null   # button strip shown only in tab mode
-var _dev_panel:   Control    = null   # the floating dev tools window
-var _dev_sections: Dictionary = {}    # section_id → content VBoxContainer
+# ── Dev sidebar + floating window state ──────────────────────────────────────
+var _dev_sidebar:  Control    = null   # the persistent sidebar strip
+var _dev_windows:  Dictionary = {}     # id → PanelContainer (section windows)
+var _dev_win_open: Dictionary = {}     # id → bool (open state before Tab exit)
 
 # ── Weather section state ─────────────────────────────────────────────────────
 var _sky_manager:    Node  = null   # resolved lazily via scene tree
@@ -105,78 +106,63 @@ func _add_role_label():
 # Called by world.gd after local player is ready.
 func set_local_player(player: Node):
 	_local_player = player
-	_build_tab_bar()
-	_build_dev_panel()
+	_build_dev_sidebar()
 
 # ── Tab mode ─────────────────────────────────────────────────────────────────
 
 ## Called by player.gd whenever tab mode is toggled.
 func set_tab_mode(active: bool) -> void:
-	if _tab_bar:
-		_tab_bar.visible = active
-	if not active:
+	if _dev_sidebar:
+		_dev_sidebar.visible = active
+	if active:
+		# Restore section windows that were open when Tab was last closed.
+		for id in _dev_win_open:
+			if _dev_windows.has(id):
+				_dev_windows[id].visible = _dev_win_open[id]
+	else:
+		# Snapshot each window's open state then hide everything.
+		for id in _dev_windows:
+			_dev_win_open[id] = _dev_windows[id].visible
+			_dev_windows[id].visible = false
 		cancel_pending_spawn()
 		end_despawn_mode()
 
-func _build_tab_bar() -> void:
-	if _tab_bar:
-		return
-	# Vertical strip of tab-mode buttons, top-right corner, below the role label.
-	var bar = VBoxContainer.new()
-	bar.visible       = false
-	bar.anchor_left   = 1.0
-	bar.anchor_right  = 1.0
-	bar.anchor_top    = 0.0
-	bar.anchor_bottom = 0.0
-	bar.offset_left   = -90.0
-	bar.offset_right  = -10.0
-	bar.offset_top    = 50.0
-	bar.offset_bottom = 300.0
+# ── Dev sidebar ──────────────────────────────────────────────────────────────
 
-	var dev_btn = Button.new()
-	dev_btn.text = "Dev"
-	dev_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	dev_btn.pressed.connect(_toggle_dev_panel)
-	bar.add_child(dev_btn)
-
-	add_child(bar)
-	_tab_bar = bar
-
-# ── Dev panel ────────────────────────────────────────────────────────────────
-
-func _toggle_dev_panel() -> void:
-	if _dev_panel:
-		_dev_panel.visible = not _dev_panel.visible
-
-## Called by the header's gui_input; starts a drag from the mouse-down position.
-func _on_dev_header_input(event: InputEvent) -> void:
+## Shared header-drag handler — bind(win) to wire any panel's header.
+## Buttons inside the header consume their own events; only blank header space drags.
+func _on_win_header_input(event: InputEvent, win: Control) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed and _dev_panel:
+		if event.pressed:
 			_dev_drag_active = true
-			_dev_drag_offset = _dev_panel.global_position - event.global_position
+			_dev_drag_target = win
+			_dev_drag_offset = win.global_position - event.global_position
+			win.move_to_front()
 			get_viewport().set_input_as_handled()
-		else:
+		elif _dev_drag_target == win:
 			_dev_drag_active = false
+			_dev_drag_target = null
 
-## Global input handler: moves the panel while dragging, releases on mouse-up.
-## Using _input (not _unhandled_input) so release is caught even outside the header.
+## Global handler — moves the dragged panel and releases on mouse-up anywhere.
 func _input(event: InputEvent) -> void:
-	if not _dev_drag_active or _dev_panel == null:
+	if not _dev_drag_active or _dev_drag_target == null:
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
 		_dev_drag_active = false
+		_dev_drag_target = null
 	elif event is InputEventMouseMotion:
 		var me:      InputEventMouseMotion = event as InputEventMouseMotion
 		var new_pos: Vector2               = me.global_position + _dev_drag_offset
 		var vs:      Vector2               = get_viewport().get_visible_rect().size
-		# Keep at least 80 px on-screen horizontally and the title bar always visible.
-		new_pos.x = clampf(new_pos.x, -(_dev_panel.size.x - 80.0), vs.x - 80.0)
+		new_pos.x = clampf(new_pos.x, -(_dev_drag_target.size.x - 80.0), vs.x - 80.0)
 		new_pos.y = clampf(new_pos.y, 0.0, vs.y - 30.0)
-		_dev_panel.global_position = new_pos
+		_dev_drag_target.global_position = new_pos
 		get_viewport().set_input_as_handled()
 
-func _build_dev_panel() -> void:
-	if _dev_panel:
+## Builds the persistent narrow sidebar shown whenever Tab mode is active.
+## Section buttons lazily create their own floating windows on first press.
+func _build_dev_sidebar() -> void:
+	if _dev_sidebar:
 		return
 
 	var panel = PanelContainer.new()
@@ -185,110 +171,131 @@ func _build_dev_panel() -> void:
 	panel.anchor_right        = 0.0
 	panel.anchor_top          = 0.0
 	panel.anchor_bottom       = 0.0
-	panel.custom_minimum_size = Vector2(580, 520)
+	panel.custom_minimum_size = Vector2(120, 0)
+
+	var outer = VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 2)
+	panel.add_child(outer)
+
+	# Draggable header — no close button; sidebar persists for the whole Tab session.
+	var header = HBoxContainer.new()
+	header.mouse_filter               = Control.MOUSE_FILTER_STOP
+	header.mouse_default_cursor_shape = Control.CURSOR_DRAG
+	header.gui_input.connect(_on_win_header_input.bind(panel))
+	outer.add_child(header)
+
+	var title = Label.new()
+	title.text = "DEV"
+	title.add_theme_font_size_override("font_size", 12)
+	title.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(title)
+
+	outer.add_child(HSeparator.new())
+
+	var buttons = VBoxContainer.new()
+	buttons.add_theme_constant_override("separation", 2)
+	outer.add_child(buttons)
+
+	_dev_windows  = {}
+	_dev_win_open = {}
+	_add_dev_section(buttons, "player",   "Player",   _build_player_section)
+	_add_dev_section(buttons, "world",    "World",    _build_world_section)
+	_add_dev_section(buttons, "settings", "Settings", _build_settings_section)
+	_add_dev_section(buttons, "hold",     "Hold",     _build_hold_section)
+	_add_dev_section(buttons, "spawn",    "Spawn",    _build_spawn_section)
+
+	# Despawn: direct action, no window.
+	var despawn_btn = Button.new()
+	despawn_btn.text      = "Despawn"
+	despawn_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	despawn_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	despawn_btn.pressed.connect(func() -> void: start_despawn_mode())
+	buttons.add_child(despawn_btn)
+
+	_add_dev_section(buttons, "weather", "Weather", _build_weather_section)
+
+	add_child(panel)
+	# Top-right by default; position persists across Tab cycles.
+	var vs: Vector2 = get_viewport().get_visible_rect().size
+	panel.position  = Vector2(vs.x - 130.0, 50.0).floor()
+	_dev_sidebar    = panel
+
+## Builds a standalone floating window for one dev section.
+## Added to the scene tree by _toggle_dev_window on first open.
+func _create_dev_window(title_text: String, builder: Callable) -> PanelContainer:
+	var win = PanelContainer.new()
+	win.anchor_left         = 0.0
+	win.anchor_right        = 0.0
+	win.anchor_top          = 0.0
+	win.anchor_bottom       = 0.0
+	win.custom_minimum_size = Vector2(400, 0)
 
 	var outer = VBoxContainer.new()
 	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	outer.size_flags_vertical   = Control.SIZE_EXPAND_FILL
-	panel.add_child(outer)
+	win.add_child(outer)
 
-	# ── Header row ───────────────────────────────────────────────────────────
 	var header = HBoxContainer.new()
+	header.mouse_filter               = Control.MOUSE_FILTER_STOP
+	header.mouse_default_cursor_shape = Control.CURSOR_DRAG
+	header.gui_input.connect(_on_win_header_input.bind(win))
 	outer.add_child(header)
 
-	var title = Label.new()
-	title.text = "DEV TOOLS"
-	title.add_theme_font_size_override("font_size", 15)
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header.add_child(title)
+	var lbl = Label.new()
+	lbl.text = title_text
+	lbl.add_theme_font_size_override("font_size", 13)
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(lbl)
 
 	var close_btn = Button.new()
 	close_btn.text = "✕"
 	close_btn.flat = true
-	close_btn.pressed.connect(func(): panel.visible = false)
+	close_btn.pressed.connect(func(): win.visible = false)
 	header.add_child(close_btn)
 
-	# Drag: clicking and dragging the header moves the panel.
-	# Buttons in the header still consume their own events and are unaffected.
-	header.mouse_filter               = Control.MOUSE_FILTER_STOP
-	header.mouse_default_cursor_shape = Control.CURSOR_DRAG
-	header.gui_input.connect(_on_dev_header_input)
-
 	outer.add_child(HSeparator.new())
-
-	# ── Body: left sidebar + right content ────────────────────────────────────
-	var body = HBoxContainer.new()
-	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	outer.add_child(body)
-
-	var sidebar = VBoxContainer.new()
-	sidebar.custom_minimum_size = Vector2(100, 0)
-	sidebar.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	body.add_child(sidebar)
-
-	body.add_child(VSeparator.new())
 
 	var scroll = ScrollContainer.new()
 	scroll.size_flags_horizontal  = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical    = Control.SIZE_EXPAND_FILL
+	scroll.custom_minimum_size    = Vector2(0, 400)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	body.add_child(scroll)
+	outer.add_child(scroll)
 
-	var stack = VBoxContainer.new()
-	stack.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(stack)
+	var content = VBoxContainer.new()
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(content)
 
-	# ── Register sections ─────────────────────────────────────────────────────
-	# Add new sections here as the dev toolset grows.
-	_dev_sections = {}
-	_add_dev_section(sidebar, stack, "player",   "Player",   _build_player_section)
-	_add_dev_section(sidebar, stack, "world",    "World",    _build_world_section)
-	_add_dev_section(sidebar, stack, "settings", "Settings", _build_settings_section)
-	_add_dev_section(sidebar, stack, "hold",     "Hold",     _build_hold_section)
-	_add_dev_section(sidebar, stack, "spawn",    "Spawn",    _build_spawn_section)
+	builder.call(content)
+	return win
 
-	# Despawn is a direct action button, not a section.
-	var despawn_sidebar_btn := Button.new()
-	despawn_sidebar_btn.text = "Despawn"
-	despawn_sidebar_btn.alignment             = HORIZONTAL_ALIGNMENT_LEFT
-	despawn_sidebar_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	despawn_sidebar_btn.pressed.connect(func() -> void:
-		start_despawn_mode())
-	sidebar.add_child(despawn_sidebar_btn)
+## Toggles a section window open/closed. Creates it lazily on first press.
+func _toggle_dev_window(id: String, label: String, builder: Callable) -> void:
+	if _dev_windows.has(id):
+		var win: Control = _dev_windows[id]
+		win.visible = not win.visible
+		if win.visible:
+			win.move_to_front()
+		return
+	# First open: build, register, position next to the sidebar.
+	var win := _create_dev_window(label, builder)
+	add_child(win)
+	var sx: float  = _dev_sidebar.global_position.x if _dev_sidebar else 100.0
+	var sy: float  = _dev_sidebar.global_position.y if _dev_sidebar else 50.0
+	var off: float = float(_dev_windows.size()) * 28.0
+	win.position   = Vector2(maxf(sx - 410.0, 10.0), sy + off).floor()
+	_dev_windows[id]  = win
+	_dev_win_open[id] = true
 
-	_add_dev_section(sidebar, stack, "weather",  "Weather",  _build_weather_section)
-
-	_activate_dev_section("player")
-
-	add_child(panel)
-	# Centre on first build; position is absolute and persists across show/hide.
-	var vs := get_viewport().get_visible_rect().size
-	panel.position = Vector2(
-		maxf((vs.x - 580.0) * 0.5, 10.0),
-		maxf((vs.y - 520.0) * 0.5, 50.0)).floor()
-	_dev_panel = panel
-
-## Registers a named section: adds a sidebar button and builds its content.
-## `builder` receives the section's VBoxContainer and populates it.
-func _add_dev_section(sidebar: VBoxContainer, stack: VBoxContainer,
-		id: String, label: String, builder: Callable) -> void:
-	var section = VBoxContainer.new()
-	section.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	section.visible = false
-	stack.add_child(section)
-	builder.call(section)
-	_dev_sections[id] = section
-
+## Adds a sidebar button that lazily creates and toggles its floating window.
+func _add_dev_section(buttons: VBoxContainer, id: String, label: String, builder: Callable) -> void:
 	var btn = Button.new()
-	btn.text = label
+	btn.text      = label
 	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	btn.pressed.connect(_activate_dev_section.bind(id))
-	sidebar.add_child(btn)
-
-func _activate_dev_section(id: String) -> void:
-	for key in _dev_sections:
-		_dev_sections[key].visible = (key == id)
+	btn.pressed.connect(_toggle_dev_window.bind(id, label, builder))
+	buttons.add_child(btn)
 
 # ── Spawn section ────────────────────────────────────────────────────────────
 
@@ -610,9 +617,13 @@ func _unhandled_input(event):
 		if _despawn_mode:
 			end_despawn_mode()
 			return
-		# Close the dev panel before reaching the pause toggle.
-		if _dev_panel != null and _dev_panel.visible:
-			_dev_panel.visible = false
+		# Close open section windows before reaching the pause toggle.
+		var any_closed := false
+		for id in _dev_windows:
+			if _dev_windows[id].visible:
+				_dev_windows[id].visible = false
+				any_closed = true
+		if any_closed:
 			return
 		_toggle_pause()
 
