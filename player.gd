@@ -301,6 +301,8 @@ func _on_action_chosen(action: String, target: Node):
 				if _is_peer_connected():
 					_rpc_take_object.rpc(str(_held_object.get_path()))
 				_tab_mode = false
+				if _hud:
+					_hud.set_tab_mode(false)
 				if not (_hud and _hud.pause_overlay.visible):
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 				AudioManager.play_pickup()
@@ -317,6 +319,8 @@ func _on_action_chosen(action: String, target: Node):
 				if _is_peer_connected():
 					_rpc_take_object.rpc(str(_held_object.get_path()))
 				_tab_mode = false
+				if _hud:
+					_hud.set_tab_mode(false)
 				if not (_hud and _hud.pause_overlay.visible):
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 				AudioManager.play_pickup()
