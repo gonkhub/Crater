@@ -210,6 +210,16 @@ func _build_dev_panel() -> void:
 	_add_dev_section(sidebar, stack, "world",    "World",    _build_world_section)
 	_add_dev_section(sidebar, stack, "settings", "Settings", _build_settings_section)
 	_add_dev_section(sidebar, stack, "spawn",    "Spawn",    _build_spawn_section)
+
+	# Despawn is a direct action button, not a section.
+	var despawn_sidebar_btn := Button.new()
+	despawn_sidebar_btn.text = "Despawn"
+	despawn_sidebar_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	despawn_sidebar_btn.pressed.connect(func() -> void:
+		start_despawn_mode()
+		panel.visible = false)
+	sidebar.add_child(despawn_sidebar_btn)
+
 	_add_dev_section(sidebar, stack, "weather",  "Weather",  _build_weather_section)
 
 	_activate_dev_section("player")
@@ -329,17 +339,6 @@ func _build_player_section(vbox: VBoxContainer) -> void:
 # ── World dev section ─────────────────────────────────────────────────────────
 
 func _build_world_section(vbox: VBoxContainer) -> void:
-	# Despawn mode
-	var despawn_btn = Button.new()
-	despawn_btn.text = "Despawn Mode"
-	despawn_btn.pressed.connect(func() -> void:
-		start_despawn_mode()
-		if _dev_panel:
-			_dev_panel.visible = false)
-	vbox.add_child(despawn_btn)
-
-	vbox.add_child(HSeparator.new())
-
 	# Freeze all physics objects
 	var freeze_btn = CheckButton.new()
 	freeze_btn.text = "Freeze All Objects"
