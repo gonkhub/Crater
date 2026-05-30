@@ -166,8 +166,9 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
 		_dev_drag_active = false
 	elif event is InputEventMouseMotion:
-		var new_pos := event.global_position + _dev_drag_offset
-		var vs      := get_viewport().get_visible_rect().size
+		var me:      InputEventMouseMotion = event as InputEventMouseMotion
+		var new_pos: Vector2               = me.global_position + _dev_drag_offset
+		var vs:      Vector2               = get_viewport().get_visible_rect().size
 		# Keep at least 80 px on-screen horizontally and the title bar always visible.
 		new_pos.x = clampf(new_pos.x, -(_dev_panel.size.x - 80.0), vs.x - 80.0)
 		new_pos.y = clampf(new_pos.y, 0.0, vs.y - 30.0)
