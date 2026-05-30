@@ -221,6 +221,38 @@ func _rpc_recv_object_state(obj_path: String, xform: Transform3D, vel: Vector3, 
 
 # ── Dynamic spawning ────────────────────────────────────────────────────────
 
+## Removes a node from the scene on all peers. Server-authoritative.
+## Accepts any PhysicsBody3D — works for RigidBody3D props and CharacterBody3D NPCs.
+func despawn_object(node: Node) -> void:
+	if multiplayer.has_multiplayer_peer() and not multiplayer.is_server():
+		_rpc_request_despawn.rpc_id(1, str(node.get_path()))
+	else:
+		_server_despawn_object(str(node.get_path()))
+
+@rpc("any_peer", "reliable")
+func _rpc_request_despawn(node_path: String) -> void:
+	if not multiplayer.is_server():
+		return
+	_server_despawn_object(node_path)
+
+func _server_despawn_object(node_path: String) -> void:
+	var node := get_tree().root.get_node_or_null(node_path)
+	if not node:
+		return
+	_was_moving.erase(node_path)
+	_net_targets.erase(node_path)
+	node.queue_free()
+	if multiplayer.has_multiplayer_peer():
+		_rpc_recv_despawn.rpc(node_path)
+
+@rpc("authority", "reliable")
+func _rpc_recv_despawn(node_path: String) -> void:
+	_was_moving.erase(node_path)
+	_net_targets.erase(node_path)
+	var node := get_tree().root.get_node_or_null(node_path)
+	if node:
+		node.queue_free()
+
 ## Public entry-point called by player.gd after a successful spawn raycast.
 ## Routes through the server so physics authority is always correct.
 func spawn_object(scene_path: String, pos: Vector3) -> void:

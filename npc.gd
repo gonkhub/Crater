@@ -18,6 +18,7 @@ var _has_net_target: bool    = false
 var _sync_tick: int = 0
 
 func _ready():
+	add_to_group("npcs")
 	if not is_multiplayer_authority():
 		set_physics_process(false)
 		return

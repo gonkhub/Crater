@@ -23,8 +23,9 @@ var ROLL_DAMPING = 0.08       # axial-spin damping — much lower so spin coasts
 var SWAY_MOUSE_SCALE = 0.008  # pixels → angular velocity (rad/s, scaled by 1/pivot)
 var ENDPOINT_MARGIN = 0.06    # minimum clearance between object endpoints and surfaces
 
-var _sliding := false
+var _sliding  := false
 var _tab_mode := false
+var _noclip   := false
 var _sway_angle: float = -PI / 2.0   # position of close end on the circle (−½π = bottom)
 var _sway_ang_vel: float = 0.0       # position angular velocity (rad/s)
 var _sway_target:    float = -PI / 2.0  # spring target angle
@@ -187,6 +188,8 @@ func _unhandled_input(event):
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			if _hud and not _hud._pending_spawn.is_empty():
 				_place_queued_spawn()
+			elif _hud and _hud.is_despawn_mode():
+				_execute_despawn_at_cursor()
 			elif _hud and _hud.is_action_menu_visible():
 				_hud.hide_action_menu()
 			elif _hud and _hud.is_info_popup_visible():
@@ -202,6 +205,12 @@ func _unhandled_input(event):
 				_hud.cancel_pending_spawn()
 
 func _physics_process(delta):
+	if _noclip:
+		_noclip_fly(delta)
+		if _is_peer_connected():
+			_rpc_player_state.rpc(global_position, rotation.y, camera.rotation.x)
+		return
+
 	var gravity = get_gravity() * GRAVITY_SCALE
 
 	if not is_on_floor():
@@ -699,6 +708,56 @@ func _update_held_object(delta: float):
 		_punch_peak_speed = maxf(_punch_peak_speed, frame_speed)
 
 	_held_object.global_transform = Transform3D(target_basis, target_pos)
+
+# ── Dev tools ───────────────────────────────────────────────────────────────
+
+func dev_set_noclip(on: bool) -> void:
+	_noclip = on
+	if on and _held_object:
+		_drop_object()
+	if not on:
+		velocity = Vector3.ZERO
+
+func dev_teleport_to_origin() -> void:
+	global_position = Vector3(0.0, 3.0, 0.0)
+	velocity        = Vector3.ZERO
+
+## Free-flight movement used in noclip mode.
+## WASD moves relative to camera direction; Jump = up; Slide = down.
+func _noclip_fly(delta: float) -> void:
+	var dir := Vector3.ZERO
+	var input := Input.get_vector("left", "right", "up", "down")
+	dir += camera.global_transform.basis.z * -input.y
+	dir += camera.global_transform.basis.x *  input.x
+	if Input.is_action_pressed("jump"):  dir.y += 1.0
+	if Input.is_action_pressed("slide"): dir.y -= 1.0
+	if dir.length_squared() > 0.0:
+		global_position += dir.normalized() * SPEED * 3.0 * delta
+
+## Fires a raycast from the cursor and despawns the first physics body hit.
+func _execute_despawn_at_cursor() -> void:
+	var mouse_pos := get_viewport().get_mouse_position()
+	var origin    := camera.project_ray_origin(mouse_pos)
+	var ray_end   := origin + camera.project_ray_normal(mouse_pos) * INTERACT_RANGE
+	var params    := PhysicsRayQueryParameters3D.create(origin, ray_end)
+	params.exclude = [get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(params)
+	if not hit:
+		return
+	var target: Node = hit.collider
+	# Walk up to a root-level physics body (handles mesh children hitting the raycast).
+	while target and not (target is RigidBody3D or target is CharacterBody3D):
+		target = target.get_parent()
+	if not target:
+		return
+	# If we're holding this object, drop it first.
+	if target == _held_object:
+		_drop_object()
+	var world: Node = get_parent().get_parent()
+	if world and world.has_method("despawn_object"):
+		world.despawn_object(target)
+	if _hud:
+		_hud.end_despawn_mode()
 
 # ── Multiplayer RPCs ────────────────────────────────────────────────────────
 

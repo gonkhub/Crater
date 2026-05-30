@@ -42,6 +42,7 @@ var _stuck_origin: Vector3 = Vector3.ZERO  # position sampled when stuck timer r
 var _sync_tick:    int     = 0
 
 func _ready() -> void:
+	add_to_group("npcs")
 	if not is_multiplayer_authority():
 		set_physics_process(false)
 		return

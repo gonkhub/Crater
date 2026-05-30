@@ -19,6 +19,13 @@ var _tune_holdable:  Holdable = null
 var _pending_spawn: String = ""   # scene path queued for placement; "" = inactive
 var _spawn_label:   Label  = null
 
+# ── Despawn mode ─────────────────────────────────────────────────────────────
+var _despawn_mode:  bool  = false
+var _despawn_label: Label = null
+
+# ── FPS overlay ───────────────────────────────────────────────────────────────
+var _fps_label: Label = null
+
 # ── Dev panel state ──────────────────────────────────────────────────────────
 var _tab_bar:     Control    = null   # button strip shown only in tab mode
 var _dev_panel:   Control    = null   # the floating dev tools window
@@ -101,9 +108,10 @@ func set_local_player(player: Node):
 func set_tab_mode(active: bool) -> void:
 	if _tab_bar:
 		_tab_bar.visible = active
-	# Close the dev panel when leaving tab mode.
 	if not active and _dev_panel:
 		_dev_panel.visible = false
+	if not active:
+		end_despawn_mode()
 
 func _build_tab_bar() -> void:
 	if _tab_bar:
@@ -198,11 +206,13 @@ func _build_dev_panel() -> void:
 	# ── Register sections ─────────────────────────────────────────────────────
 	# Add new sections here as the dev toolset grows.
 	_dev_sections = {}
+	_add_dev_section(sidebar, stack, "player",   "Player",   _build_player_section)
+	_add_dev_section(sidebar, stack, "world",    "World",    _build_world_section)
 	_add_dev_section(sidebar, stack, "settings", "Settings", _build_settings_section)
 	_add_dev_section(sidebar, stack, "spawn",    "Spawn",    _build_spawn_section)
 	_add_dev_section(sidebar, stack, "weather",  "Weather",  _build_weather_section)
 
-	_activate_dev_section("settings")
+	_activate_dev_section("player")
 
 	add_child(panel)
 	_dev_panel = panel
@@ -265,6 +275,117 @@ func cancel_pending_spawn() -> void:
 	_pending_spawn = ""
 	if _spawn_label:
 		_spawn_label.visible = false
+
+# ── Despawn mode ─────────────────────────────────────────────────────────────
+
+func start_despawn_mode() -> void:
+	_despawn_mode = true
+	if _despawn_label == null:
+		_despawn_label = Label.new()
+		_despawn_label.anchor_left   = 0.5
+		_despawn_label.anchor_right  = 0.5
+		_despawn_label.anchor_top    = 0.0
+		_despawn_label.anchor_bottom = 0.0
+		_despawn_label.offset_left   = -300.0
+		_despawn_label.offset_right  =  300.0
+		_despawn_label.offset_top    = 10.0
+		_despawn_label.offset_bottom = 34.0
+		_despawn_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_despawn_label.mouse_filter  = Control.MOUSE_FILTER_IGNORE
+		_despawn_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.3))
+		add_child(_despawn_label)
+	_despawn_label.text    = "DESPAWN MODE  ·  Click object or NPC  ·  Esc to cancel"
+	_despawn_label.visible = true
+
+func end_despawn_mode() -> void:
+	_despawn_mode = false
+	if _despawn_label:
+		_despawn_label.visible = false
+
+func is_despawn_mode() -> bool:
+	return _despawn_mode
+
+# ── Player dev section ───────────────────────────────────────────────────────
+
+func _build_player_section(vbox: VBoxContainer) -> void:
+	# Noclip toggle
+	var noclip_btn = CheckButton.new()
+	noclip_btn.text = "Noclip  (WASD + Jump/Slide)"
+	noclip_btn.toggled.connect(func(on: bool) -> void:
+		if _local_player:
+			_local_player.dev_set_noclip(on))
+	vbox.add_child(noclip_btn)
+
+	vbox.add_child(HSeparator.new())
+
+	# Teleport to origin
+	var tp_btn = Button.new()
+	tp_btn.text = "Teleport to Origin"
+	tp_btn.pressed.connect(func() -> void:
+		if _local_player:
+			_local_player.dev_teleport_to_origin())
+	vbox.add_child(tp_btn)
+
+# ── World dev section ─────────────────────────────────────────────────────────
+
+func _build_world_section(vbox: VBoxContainer) -> void:
+	# Despawn mode
+	var despawn_btn = Button.new()
+	despawn_btn.text = "Despawn Mode"
+	despawn_btn.pressed.connect(func() -> void:
+		start_despawn_mode()
+		if _dev_panel:
+			_dev_panel.visible = false)
+	vbox.add_child(despawn_btn)
+
+	vbox.add_child(HSeparator.new())
+
+	# Freeze all physics objects
+	var freeze_btn = CheckButton.new()
+	freeze_btn.text = "Freeze All Objects"
+	freeze_btn.toggled.connect(func(on: bool) -> void:
+		for node in get_tree().get_nodes_in_group("world_objects"):
+			if node is RigidBody3D:
+				node.freeze = on)
+	vbox.add_child(freeze_btn)
+
+	# NPC AI toggle
+	var npc_btn = CheckButton.new()
+	npc_btn.text = "Freeze NPC AI"
+	npc_btn.toggled.connect(func(on: bool) -> void:
+		for node in get_tree().get_nodes_in_group("npcs"):
+			node.set_physics_process(not on))
+	vbox.add_child(npc_btn)
+
+	vbox.add_child(HSeparator.new())
+
+	# Nav mesh debug draw
+	var nav_btn = CheckButton.new()
+	nav_btn.text = "Nav Mesh Debug"
+	nav_btn.toggled.connect(func(on: bool) -> void:
+		NavigationServer3D.set_debug_enabled(on))
+	vbox.add_child(nav_btn)
+
+	# FPS overlay
+	var fps_btn = CheckButton.new()
+	fps_btn.text = "FPS Overlay"
+	fps_btn.toggled.connect(func(on: bool) -> void:
+		if _fps_label == null:
+			_fps_label = Label.new()
+			_fps_label.add_theme_font_size_override("font_size", 12)
+			_fps_label.add_theme_color_override("font_color", Color(0.7, 1.0, 0.7))
+			_fps_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			_fps_label.anchor_left   = 0.0
+			_fps_label.anchor_right  = 0.0
+			_fps_label.anchor_top    = 0.0
+			_fps_label.anchor_bottom = 0.0
+			_fps_label.offset_left   = 10.0
+			_fps_label.offset_top    = 10.0
+			_fps_label.offset_right  = 300.0
+			_fps_label.offset_bottom = 30.0
+			add_child(_fps_label)
+		_fps_label.visible = on)
+	vbox.add_child(fps_btn)
 
 # ── Settings section ─────────────────────────────────────────────────────────
 
@@ -379,9 +500,12 @@ func _unhandled_input(event):
 		if _info_popup != null:
 			hide_info_popup()
 			return
-		# Cancel an active spawn before reaching the dev panel / pause toggle.
+		# Cancel active spawn or despawn mode before reaching the dev panel / pause toggle.
 		if not _pending_spawn.is_empty():
 			cancel_pending_spawn()
+			return
+		if _despawn_mode:
+			end_despawn_mode()
 			return
 		# Close the dev panel before reaching the pause toggle.
 		if _dev_panel != null and _dev_panel.visible:
@@ -660,6 +784,11 @@ func _on_tune_dropdown_changed(index: int, prop: String, holdable: Holdable) -> 
 # ── Per-frame update (weather readout) ───────────────────────────────────────
 
 func _process(_delta: float) -> void:
+	if _fps_label and _fps_label.visible:
+		_fps_label.text = "FPS: %d  |  Physics: %.2f ms" % [
+			Engine.get_frames_per_second(),
+			Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
+		]
 	if _weather_readout == null or not _weather_readout.is_visible_in_tree():
 		return
 	var sm := _get_sky_manager()
