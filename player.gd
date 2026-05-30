@@ -400,6 +400,12 @@ func _dispatch_held_input(input: String):
 func _start_punch():
 	if _punch_cooldown > 0.0:
 		return
+	# Lunge lock: for objects with punch_pull > 0, block re-punch until the
+	# object has fully returned to its carry position after the previous lunge.
+	if _held_holdable:
+		var pull: float = _held_holdable.get_dynamics().get("punch_pull", 0.0)
+		if pull > 0.0 and (_punch_offset > 0.001 or _punch_returning):
+			return
 	AudioManager.play_punch_swing()
 	# Resolve per-object overrides: holdable > player default
 	var eff_cooldown:    float = _held_holdable.punch_cooldown if _held_holdable and _held_holdable.punch_cooldown > 0.0 else PUNCH_COOLDOWN

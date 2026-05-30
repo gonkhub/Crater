@@ -51,19 +51,21 @@ const _SPAWNABLE = [
 	{"label": "Mushroom", "scene": "res://Objects/mushroom.tscn"},
 ]
 
-const _WEIGHT_PARAMS = [
-	{"key": "sway_mouse_scale",  "label": "Mouse Scale",      "min": 0.0,   "max": 0.05,  "step": 0.001},
-	{"key": "sway_damping",      "label": "Sway Damping",     "min": 0.0,   "max": 2.0,   "step": 0.05},
-	{"key": "sway_spring_k",     "label": "Sway Spring",      "min": 0.0,   "max": 30.0,  "step": 0.5},
-	{"key": "sway_max_speed",    "label": "Sway Max Speed",   "min": 0.0,   "max": 20.0,  "step": 0.5},
-	{"key": "sway_sensitivity",  "label": "Sway Sensitivity", "min": 1.0,   "max": 100.0, "step": 1.0},
-	{"key": "roll_damping",      "label": "Roll Damping",     "min": 0.0,   "max": 0.5,   "step": 0.005},
-	{"key": "max_roll_speed",    "label": "Max Roll Speed",   "min": 0.0,   "max": 30.0,  "step": 0.5},
-	{"key": "punch_pull",        "label": "Punch Pull",       "min": 0.0,   "max": 20.0,  "step": 0.5},
-	{"key": "punch_accel",       "label": "Punch Accel",      "min": 0.0,   "max": 500.0, "step": 5.0},
-	{"key": "punch_peak_hold",   "label": "Peak Hold (s)",    "min": 0.0,   "max": 1.0,   "step": 0.01},
-	{"key": "punch_settle_spd",  "label": "Settle Speed",     "min": 0.0,   "max": 5.0,   "step": 0.1},
-	{"key": "punch_pushback",    "label": "Punch Pushback",   "min": 0.0,   "max": 60.0,  "step": 1.0},
+const _HOLD_SWAY_PARAMS = [
+	{"key": "sway_mouse_scale",  "label": "Mouse Scale",    "min": 0.0,   "max": 0.05,  "step": 0.001},
+	{"key": "sway_damping",      "label": "Sway Damping",   "min": 0.0,   "max": 2.0,   "step": 0.05},
+	{"key": "sway_spring_k",     "label": "Sway Spring",    "min": 0.0,   "max": 30.0,  "step": 0.5},
+	{"key": "sway_max_speed",    "label": "Max Speed",      "min": 0.0,   "max": 20.0,  "step": 0.5},
+	{"key": "sway_sensitivity",  "label": "Sensitivity",    "min": 1.0,   "max": 100.0, "step": 1.0},
+	{"key": "roll_damping",      "label": "Roll Damping",   "min": 0.0,   "max": 0.5,   "step": 0.005},
+	{"key": "max_roll_speed",    "label": "Max Roll Speed", "min": 0.0,   "max": 30.0,  "step": 0.5},
+]
+const _HOLD_PUNCH_PARAMS = [
+	{"key": "punch_pull",        "label": "Lunge Pull",     "min": 0.0,   "max": 20.0,  "step": 0.5},
+	{"key": "punch_accel",       "label": "Punch Accel",    "min": 0.0,   "max": 500.0, "step": 5.0},
+	{"key": "punch_peak_hold",   "label": "Peak Hold (s)",  "min": 0.0,   "max": 1.0,   "step": 0.01},
+	{"key": "punch_settle_spd",  "label": "Settle Speed",   "min": 0.0,   "max": 5.0,   "step": 0.1},
+	{"key": "punch_pushback",    "label": "Pushback",       "min": 0.0,   "max": 60.0,  "step": 1.0},
 ]
 
 # ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -210,6 +212,7 @@ func _build_dev_panel() -> void:
 	_add_dev_section(sidebar, stack, "player",   "Player",   _build_player_section)
 	_add_dev_section(sidebar, stack, "world",    "World",    _build_world_section)
 	_add_dev_section(sidebar, stack, "settings", "Settings", _build_settings_section)
+	_add_dev_section(sidebar, stack, "hold",     "Hold",     _build_hold_section)
 	_add_dev_section(sidebar, stack, "spawn",    "Spawn",    _build_spawn_section)
 
 	# Despawn is a direct action button, not a section.
@@ -424,72 +427,136 @@ func _build_settings_section(vbox: VBoxContainer) -> void:
 
 		slider.value_changed.connect(_on_setting_changed.bind(entry["prop"], val_lbl))
 
-	_build_weight_settings(vbox)
-
 func _on_setting_changed(value: float, prop: String, val_lbl: Label) -> void:
 	_local_player.set(prop, value)
 	val_lbl.text = str(value)
 
-func _build_weight_settings(vbox: VBoxContainer) -> void:
-	var weight_names = ["Light", "Medium", "Heavy"]
+# ── Hold physics section ─────────────────────────────────────────────────────
+
+func _build_hold_section(vbox: VBoxContainer) -> void:
+	var weight_names := ["Light", "Medium", "Heavy"]
+
+	# Tab switcher (Light / Medium / Heavy) — ButtonGroup keeps one active.
+	var tab_row = HBoxContainer.new()
+	tab_row.add_theme_constant_override("separation", 2)
+	vbox.add_child(tab_row)
+
+	# Build panes before buttons so closures can reference them.
+	var panes: Array = []
+	for _i in range(3):
+		var pane = VBoxContainer.new()
+		pane.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pane.visible               = false
+		vbox.add_child(pane)
+		panes.append(pane)
+	panes[0].visible = true
+
+	var tab_group = ButtonGroup.new()
 	for i in range(3):
-		var group_lbl = Label.new()
-		group_lbl.text = "— Weight Class: %s —" % weight_names[i]
-		group_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		vbox.add_child(group_lbl)
+		var btn = Button.new()
+		btn.text              = weight_names[i]
+		btn.toggle_mode       = true
+		btn.button_group      = tab_group
+		btn.button_pressed    = (i == 0)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.pressed.connect(_activate_hold_tab.bind(panes, i))
+		tab_row.add_child(btn)
 
-		# Collect slider+val_lbl pairs so the reset button can refresh them.
-		var slider_refs: Array = []
+	# Per-weight pane — Sway group then Punch / Lunge group.
+	for i in range(3):
+		var pane: VBoxContainer = panes[i]
+		var ctrl_refs: Array    = []
 
-		for param in _WEIGHT_PARAMS:
-			var row = HBoxContainer.new()
-			vbox.add_child(row)
+		_add_hold_group_label(pane, "Sway")
+		for p in _HOLD_SWAY_PARAMS:
+			ctrl_refs.append(_add_hold_row(pane, i, p))
 
-			var name_lbl = Label.new()
-			name_lbl.text = param["label"]
-			name_lbl.custom_minimum_size   = Vector2(130, 0)
-			name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			row.add_child(name_lbl)
+		_add_hold_group_label(pane, "Punch  ·  Lunge")
+		for p in _HOLD_PUNCH_PARAMS:
+			ctrl_refs.append(_add_hold_row(pane, i, p))
 
-			var slider = HSlider.new()
-			slider.min_value           = param["min"]
-			slider.max_value           = param["max"]
-			slider.step                = param["step"]
-			slider.value               = Holdable._WEIGHT_PHYSICS[i].get(param["key"], 0.0)
-			slider.custom_minimum_size = Vector2(150, 0)
-			row.add_child(slider)
+		pane.add_child(HSeparator.new())
 
-			var val_lbl = Label.new()
-			val_lbl.text                 = str(slider.value)
-			val_lbl.custom_minimum_size  = Vector2(60, 0)
-			val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-			row.add_child(val_lbl)
-
-			slider.value_changed.connect(_on_weight_setting_changed.bind(i, param["key"], val_lbl))
-			slider_refs.append({"slider": slider, "val_lbl": val_lbl, "key": param["key"]})
-
-		# Reset-to-defaults button for this weight class.
 		var reset_btn = Button.new()
-		reset_btn.text = "Reset %s to Defaults" % weight_names[i]
+		reset_btn.text = "↺  Reset %s to Defaults" % weight_names[i]
 		reset_btn.add_theme_color_override("font_color", Color(0.9, 0.5, 0.3))
-		vbox.add_child(reset_btn)
-		reset_btn.pressed.connect(_on_weight_reset.bind(i, slider_refs))
+		reset_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pane.add_child(reset_btn)
+		reset_btn.pressed.connect(_on_hold_reset.bind(i, ctrl_refs))
 
-		vbox.add_child(HSeparator.new())
+func _activate_hold_tab(panes: Array, active: int) -> void:
+	for j in range(panes.size()):
+		panes[j].visible = (j == active)
 
-func _on_weight_setting_changed(value: float, weight_idx: int, key: String, val_lbl: Label) -> void:
-	Holdable.save_weight_physics(weight_idx, key, value)
-	val_lbl.text = str(value)
+func _add_hold_group_label(parent: VBoxContainer, text: String) -> void:
+	parent.add_child(HSeparator.new())
+	var lbl = Label.new()
+	lbl.text = text
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.add_theme_color_override("font_color", Color(0.55, 0.75, 0.55))
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	parent.add_child(lbl)
 
-func _on_weight_reset(weight_idx: int, slider_refs: Array) -> void:
+## Builds one parameter row: Label + HSlider (sweep) + SpinBox (precise entry).
+## Slider and SpinBox are bidirectionally synced; both save on change.
+func _add_hold_row(parent: VBoxContainer, weight_idx: int, param: Dictionary) -> Dictionary:
+	var key:     String = param["key"]
+	var current: float  = Holdable._WEIGHT_PHYSICS[weight_idx].get(key, 0.0)
+
+	var row = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	parent.add_child(row)
+
+	var lbl = Label.new()
+	lbl.text                = param["label"]
+	lbl.custom_minimum_size = Vector2(105, 0)
+	lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(lbl)
+
+	var slider = HSlider.new()
+	slider.min_value             = param["min"]
+	slider.max_value             = param["max"]
+	slider.step                  = param["step"]
+	slider.value                 = current
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.custom_minimum_size   = Vector2(110, 0)
+	row.add_child(slider)
+
+	var spin = SpinBox.new()
+	spin.min_value           = param["min"]
+	spin.max_value           = param["max"]
+	spin.step                = param["step"]
+	spin.value               = current
+	spin.allow_greater       = true
+	spin.custom_minimum_size = Vector2(80, 0)
+	row.add_child(spin)
+
+	# Slider → SpinBox + save
+	slider.value_changed.connect(func(v: float) -> void:
+		spin.set_block_signals(true)
+		spin.value = v
+		spin.set_block_signals(false)
+		Holdable.save_weight_physics(weight_idx, key, v))
+
+	# SpinBox → Slider + save (slider's own signal is blocked to avoid double-save)
+	spin.value_changed.connect(func(v: float) -> void:
+		slider.set_block_signals(true)
+		slider.value = v
+		slider.set_block_signals(false)
+		Holdable.save_weight_physics(weight_idx, key, v))
+
+	return {"slider": slider, "spin": spin, "key": key}
+
+func _on_hold_reset(weight_idx: int, ctrl_refs: Array) -> void:
 	var restored: Dictionary = Holdable.reset_weight_physics(weight_idx)
-	for ref in slider_refs:
-		var new_val: float = restored.get(ref["key"], 0.0)
-		# Block signal to avoid triggering save_weight_physics during the refresh.
+	for ref in ctrl_refs:
+		var v: float = restored.get(ref["key"], 0.0)
 		ref["slider"].set_block_signals(true)
-		ref["slider"].value = new_val
+		ref["slider"].value = v
 		ref["slider"].set_block_signals(false)
-		ref["val_lbl"].text = str(new_val)
+		ref["spin"].set_block_signals(true)
+		ref["spin"].value = v
+		ref["spin"].set_block_signals(false)
 
 # ── Input handling ───────────────────────────────────────────────────────────
 
