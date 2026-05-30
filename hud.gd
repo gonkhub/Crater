@@ -207,9 +207,8 @@ func _build_dev_sidebar() -> void:
 
 	# Despawn: direct action, no window.
 	var despawn_btn = Button.new()
-	despawn_btn.text       = "Despawn"
-	despawn_btn.alignment  = HORIZONTAL_ALIGNMENT_LEFT
-	despawn_btn.focus_mode = Control.FOCUS_NONE
+	despawn_btn.text      = "Despawn"
+	despawn_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	despawn_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	despawn_btn.pressed.connect(func() -> void: start_despawn_mode())
 	buttons.add_child(despawn_btn)
@@ -218,6 +217,7 @@ func _build_dev_sidebar() -> void:
 
 	add_child(panel)
 	# Top-right by default; position persists across Tab cycles.
+	_disable_focus_recursive(panel)
 	var vs: Vector2 = get_viewport().get_visible_rect().size
 	panel.position  = Vector2(vs.x - 130.0, 50.0).floor()
 	_dev_sidebar    = panel
@@ -269,6 +269,7 @@ func _create_dev_window(title_text: String, builder: Callable) -> PanelContainer
 	scroll.add_child(content)
 
 	builder.call(content)
+	_disable_focus_recursive(win)
 	return win
 
 ## Toggles a section window open/closed. Creates it lazily on first press.
@@ -289,12 +290,19 @@ func _toggle_dev_window(id: String, label: String, builder: Callable) -> void:
 	_dev_windows[id]  = win
 	_dev_win_open[id] = true
 
+## Recursively disables keyboard focus on every Control in a subtree.
+## Call once after a panel is fully built to prevent Tab-key traversal.
+func _disable_focus_recursive(node: Node) -> void:
+	for child in node.get_children():
+		if child is Control:
+			(child as Control).focus_mode = Control.FOCUS_NONE
+		_disable_focus_recursive(child)
+
 ## Adds a sidebar button that lazily creates and toggles its floating window.
 func _add_dev_section(buttons: VBoxContainer, id: String, label: String, builder: Callable) -> void:
 	var btn = Button.new()
-	btn.text       = label
-	btn.alignment  = HORIZONTAL_ALIGNMENT_LEFT
-	btn.focus_mode = Control.FOCUS_NONE
+	btn.text      = label
+	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	btn.pressed.connect(_toggle_dev_window.bind(id, label, builder))
 	buttons.add_child(btn)
