@@ -12,6 +12,7 @@ This is a **collaborative code-building exercise between agent and user.** The d
 - **The agent's job is accurate execution of the user's vision.** When a request is ambiguous, ask a focused clarifying question rather than guessing and building.
 - **Explicit invariants do not imply freedom elsewhere.** The fact that specific systems are documented as protected does not mean undocumented systems are open to unsolicited change. Treat every system as protected unless the user explicitly asks you to touch it.
 - **Scope is always the minimum necessary.** Implement what was asked. Note adjacent improvements you noticed, but do not apply them unilaterally. If you spot something clearly broken in code you're reading, flag it — don't fix it silently.
+- **Be concise.** Short answers, no fluff. Efficient communication saves tokens and keeps the session focused.
 
 ---
 
