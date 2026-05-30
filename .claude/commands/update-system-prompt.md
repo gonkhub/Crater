@@ -17,7 +17,7 @@ Steps to follow — do them in order, do not skip any:
    - Update existing sections where behaviour has materially changed.
    - Add new entries to the Design Invariants table if the branch introduced decisions that must not be silently undone.
    - Remove or correct anything that is now outdated.
-   - Do NOT rewrite sections unrelated to the merged branch. Minimal diff only.
+   - Rewrite for compactness without losing details important for future understanding.
 
 7. Do not summarise what you changed — just produce the updated file. The user can review the git diff.
 

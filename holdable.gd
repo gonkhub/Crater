@@ -119,6 +119,13 @@ static var _WEIGHT_PHYSICS = [
 ## Minimum time between punches (seconds). 0 = player default.
 @export_range(0.0, 2.0, 0.05) var punch_cooldown: float = 0.0
 
+# ── Scoring ──────────────────────────────────────────────────────────────────
+@export_group("Scoring")
+
+## Points awarded when this object is incinerated.
+## First incineration of any object type in a session scores double.
+@export_range(0.0, 1000.0, 1.0) var point_value: float = 1.0
+
 # ────────────────────────────────────────────────────────────────────────────
 
 ## Returns the effective physics dictionary for this object: the weight bucket
@@ -152,6 +159,8 @@ func tune_schema() -> Array:
 		{"type": "number",   "prop": "punch_distance", "label": "Punch Distance", "min": 0.0,    "max": 8.0,   "step": 0.1},
 		{"type": "number",   "prop": "punch_impulse",  "label": "Punch Force",    "min": 0.0,    "max": 50.0,  "step": 1.0},
 		{"type": "number",   "prop": "throw_speed",    "label": "Throw Speed",    "min": 0.0,    "max": 50.0,  "step": 1.0},
+		{"type": "group",    "label": "Scoring"},
+		{"type": "number",   "prop": "point_value",    "label": "Point Value",    "min": 0.0,    "max": 1000.0, "step": 1.0},
 	]
 
 # ── Persistent tune save / load ──────────────────────────────────────────────
@@ -268,10 +277,6 @@ func _ready():
 		_physics_loaded = true
 		load_weight_physics()
 	_apply_saved_tune()
-	# Auto-register "Take" so designers don't have to list it manually.
-	var interactable = _get_interactable()
-	if interactable and "Take" not in interactable.actions:
-		interactable.actions.push_front("Take")
 
 func _get_interactable() -> Interactable:
 	for child in get_parent().get_children():

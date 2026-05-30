@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=4 uid="uid://incin001tscn0"]
+
+[ext_resource type="Script" path="res://Objects/incinerator.gd" id="1_incin0"]
+
+[node name="Incinerator" type="Node3D"]
+script = ExtResource("1_incin0")

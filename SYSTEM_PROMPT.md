@@ -48,9 +48,18 @@ The game takes place inside a crater system on the south pole of an exoplanet in
 ## Player Interaction Model
 
 ### Tab HUD
-Pressing Tab unlocks the cursor and enters "tab mode." Left-clicking an object or NPC in the viewport fires a raycast and opens a floating action menu populated from that object's `Interactable` component. Actions always include `Info` and `Tune`; `Take` is prepended automatically if the object also has a `Holdable` component. Custom actions (e.g., `"Open"`, `"Activate"`) are defined per-object in the `Interactable.actions` array and dispatch via the `action_performed` signal.
+Pressing Tab unlocks the cursor and enters "tab mode." Left-clicking an object or NPC in the viewport fires a raycast and opens a floating action menu populated from that object's `Interactable` component. Actions always include `Info`; `Take` is prepended automatically if the object also has a `Holdable` component. Custom actions (e.g., `"Open"`, `"Activate"`) are defined per-object in the `Interactable.actions` array and dispatch via the `action_performed` signal.
 
 There are no persistent on-screen prompts. The Tab HUD is the primary and only interaction surface.
+
+### Dev Sidebar
+While in tab mode a **Dev sidebar** is visible — a narrow draggable strip (top-right by default). It contains:
+
+- **Section buttons** — each lazily creates an independent draggable floating window: Player, World, Settings, Hold, Spawn, Weather. Window open/closed state is snapshotted when Tab closes and restored when it reopens.
+- **Tune** (direct-action) — enters Tune mode: a cyan banner appears, clicking any holdable object opens a draggable tune window for that object's scene type. Window is keyed `"tune:" + scene_file_path` and stored in `_dev_windows`, so it persists across Tab cycles and clicking a second instance of the same scene brings the existing window to front rather than opening a duplicate. Esc cancels.
+- **Despawn** (direct-action) — enters Despawn mode: clicking any physics body removes it from all peers. Esc cancels.
+
+All Dev UI controls have `FOCUS_NONE` so Tab key does not cycle through them. The helper `_disable_focus_recursive(node)` in `hud.gd` enforces this; it is called twice per window — once before `add_child` and once after, to catch runtime-created widget internals (e.g., `SpinBox`'s `LineEdit`).
 
 ### Hold System — Telekinesis Physics
 This is the most important system in the game. Understand it before touching anything in `player.gd` or `holdable.gd`.
@@ -71,11 +80,47 @@ New pickupable objects must follow this pattern. Do not subclass player.gd or ba
 3. **Settle** — object retracts to 65% of max distance while M1 is still held; sway spring pre-aims at the opposite side of the circle.
 4. **Return** — M1 released; offset returns to zero; a critically-damped spring drives sway to the opposite side and holds it there.
 
-**Weight buckets.** Three classes — `LIGHT`, `MEDIUM`, `HEAVY` — each defined by 12 parameters (sway sensitivity, spring stiffness, roll decay rate, punch acceleration, peak hold duration, player pushback on collision, etc.). Stored in `Holdable._WEIGHT_PHYSICS`, a `static var` shared by all instances. Editing it at runtime propagates to all live held objects immediately. Defaults are carefully tuned — treat them as calibrated values, not placeholders.
+**Lunge lock (`_lunge_locked`).** The punch animation (all four phases) always fires whenever `_punch_cooldown` allows. The lunge velocity pull is separately gated by `_lunge_locked`:
+- Set `true` at the Phase 1→2 transition when `_lunge_active` fires.
+- Cleared when `_punch_offset <= 0.001` in Phase 4 — i.e., when the object physically returns to neutral carry position.
+- Rapid re-punching before the offset reaches zero keeps the lock engaged through subsequent punches; it releases automatically once the object settles.
+
+**Punch cooldown resolution** (in `_start_punch()`): per-object `Holdable.punch_cooldown` export (if > 0) → weight-bucket `dyn.get("punch_cooldown")` → player constant `PUNCH_COOLDOWN`.
+
+**Weight buckets.** Three classes — `LIGHT`, `MEDIUM`, `HEAVY` — each defined by 13 parameters:
+
+| Parameter | Description |
+|---|---|
+| `sway_mouse_scale` | Mouse input scale for sway position |
+| `sway_damping` | Positional sway damping per second |
+| `sway_spring_k` | Spring stiffness pulling sway to target edge |
+| `sway_max_speed` | Hard cap on sway angular velocity (rad/s) |
+| `sway_sensitivity` | Mouse pixels/frame to reach full opposite-edge amplitude |
+| `roll_damping` | Axial spin decay rate per second |
+| `max_roll_speed` | Hard cap on axial spin (rad/s) |
+| `punch_pull` | Player velocity impulse (m/s) at peak extension |
+| `punch_accel` | Extend-phase acceleration (m/s²) |
+| `punch_peak_hold` | Seconds to dwell at max extension |
+| `punch_settle_spd` | Retraction speed (m/s) from peak to M1-held position |
+| `punch_pushback` | Pushback acceleration (m/s²) on collision |
+| `punch_cooldown` | Minimum seconds between consecutive M1 punches (Light 0.35 / Medium 0.50 / Heavy 0.65) |
+
+Stored in `Holdable._WEIGHT_PHYSICS`, a `static var` shared by all instances. Editable live via **Dev → Hold** floating window (slider + spinbox per row, grouped as Sway and Punch/Lunge). A per-weight reset button restores factory values from `get_default_physics()`. Overrides persist to `user://object_tunes.cfg` under `weight_0/1/2` sections.
 
 **Endpoint collision protection.** For pivot objects (`hold_pivot > 0`), two raycasts run per frame: one to the tip (shortens depth if blocked) and one from tip to butt (clamps butt position and kills angular velocity if blocked). A `body_test_motion` center sweep handles all objects. When blocked during a punch, weight-scaled pushback force is applied against the player.
 
-**Persistence.** Per-object tuning (weight bucket, carry distance, punch parameters) is saved to `user://object_tunes.cfg` keyed by scene file path — all instances of a scene share one config. Weight-class physics overrides are saved under `weight_0/1/2` sections in the same file.
+**Per-object tune system.** Each Holdable defines `tune_schema()` — an array of entries that drives the Tune window UI. Supported entry types:
+
+| Type | UI | Storage |
+|---|---|---|
+| `"group"` | Section header label (no prop) | — |
+| `"dropdown"` | OptionButton | int index |
+| `"number"` | SpinBox | float |
+| `"vector3"` | Three X/Y/Z SpinBoxes | Vector3 |
+
+Current schema covers: Weight Bucket, Hold Rotation (vector3), Pivot Length, Carry Distance, Max Tether, Punch Distance, Punch Force, Throw Speed.
+
+`save_tune_value(prop, value)` saves to `user://object_tunes.cfg` (keyed by scene file path) and immediately propagates the value to **all live Holdable instances sharing the same scene** via `get_tree().get_nodes_in_group("holdables")`. All Holdables add themselves to the `"holdables"` group in `_ready()`. New instances pick up saved values via `_apply_saved_tune()` in their own `_ready()`.
 
 ---
 
@@ -177,3 +222,8 @@ These decisions were made deliberately after iteration. Do not change them witho
 | `Interactable` + `Holdable` is the component pattern for all pickupable things | Consistency; player.gd's interaction logic depends on finding these components by type scan |
 | Weight class defaults are calibrated — treat as tuned values | They were adjusted over many sessions; random changes will break the feel of the hold system |
 | Tab HUD is the only interaction surface | No persistent world-space prompts; no button overlays; cursor is locked during normal play |
+| Punch animation always fires on cooldown; lunge velocity pull is separately gated by `_lunge_locked` | Lunge lock was deliberately separated from punch availability so M1 feel is never blocked — only the player movement impulse is gated |
+| `save_tune_value()` must propagate to all instances of the same scene, not just self | Tuning is per-scene-type, not per-instance; silently updating only one object would create invisible inconsistency |
+| All Dev UI controls must have `FOCUS_NONE` | Tab key traversal through sidebar/window buttons fires before `_unhandled_input` and would steal Tab from tab-mode toggling |
+| No new `match` arms in `player.gd` for content actions | New interactable actions must connect to `interactable.action_performed` on the object side; `player.gd` only handles engine-level actions (`"Info"`, `"Take"`). Growing the match statement couples content to the player script. |
+| Per-object physics resolution: per-object export (if > 0) → weight-bucket value → player constant | This three-tier fallback applies to every numeric physics parameter. Zero means "inherit from the tier above," never zero-as-literal. |
