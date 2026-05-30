@@ -111,6 +111,7 @@ func set_tab_mode(active: bool) -> void:
 	if not active and _dev_panel:
 		_dev_panel.visible = false
 	if not active:
+		cancel_pending_spawn()
 		end_despawn_mode()
 
 func _build_tab_bar() -> void:
@@ -214,6 +215,7 @@ func _build_dev_panel() -> void:
 	# Despawn is a direct action button, not a section.
 	var despawn_sidebar_btn := Button.new()
 	despawn_sidebar_btn.text = "Despawn"
+	despawn_sidebar_btn.alignment             = HORIZONTAL_ALIGNMENT_LEFT
 	despawn_sidebar_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	despawn_sidebar_btn.pressed.connect(func() -> void:
 		start_despawn_mode()

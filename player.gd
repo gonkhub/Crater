@@ -470,7 +470,6 @@ func _place_queued_spawn() -> void:
 	var world: Node        = get_parent().get_parent()
 	if world and world.has_method("spawn_object"):
 		world.spawn_object(scene_path, spawn_pos)
-	_hud.cancel_pending_spawn()
 
 func _update_held_object(delta: float):
 	if not is_instance_valid(_held_object):
@@ -756,8 +755,6 @@ func _execute_despawn_at_cursor() -> void:
 	var world: Node = get_parent().get_parent()
 	if world and world.has_method("despawn_object"):
 		world.despawn_object(target)
-	if _hud:
-		_hud.end_despawn_mode()
 
 # ── Multiplayer RPCs ────────────────────────────────────────────────────────
 
