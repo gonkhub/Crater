@@ -207,8 +207,9 @@ func _build_dev_sidebar() -> void:
 
 	# Despawn: direct action, no window.
 	var despawn_btn = Button.new()
-	despawn_btn.text      = "Despawn"
-	despawn_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	despawn_btn.text       = "Despawn"
+	despawn_btn.alignment  = HORIZONTAL_ALIGNMENT_LEFT
+	despawn_btn.focus_mode = Control.FOCUS_NONE
 	despawn_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	despawn_btn.pressed.connect(func() -> void: start_despawn_mode())
 	buttons.add_child(despawn_btn)
@@ -291,8 +292,9 @@ func _toggle_dev_window(id: String, label: String, builder: Callable) -> void:
 ## Adds a sidebar button that lazily creates and toggles its floating window.
 func _add_dev_section(buttons: VBoxContainer, id: String, label: String, builder: Callable) -> void:
 	var btn = Button.new()
-	btn.text      = label
-	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	btn.text       = label
+	btn.alignment  = HORIZONTAL_ALIGNMENT_LEFT
+	btn.focus_mode = Control.FOCUS_NONE
 	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	btn.pressed.connect(_toggle_dev_window.bind(id, label, builder))
 	buttons.add_child(btn)
